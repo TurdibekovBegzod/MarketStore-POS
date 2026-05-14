@@ -1,0 +1,636 @@
+from PyQt6.QtWidgets import (
+    QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit,
+    QPushButton, QTableWidget, QTableWidgetItem, QComboBox,
+    QFrame, QMessageBox, QHeaderView, QSpinBox, QDoubleSpinBox,
+    QDialog, QFormLayout
+)
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QFont, QColor
+import database as db
+from ui.i18n import set_language
+
+
+class CurrencyDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Valyuta kurslari")
+        self.setFixedWidth(520)
+        self._build_ui()
+        self.load_data()
+
+    def _build_ui(self):
+        self.setStyleSheet("""
+            QDialog { background: white; }
+            QLabel { color: #374151; font-size: 13px; }
+            QLineEdit, QDoubleSpinBox {
+                border: 1px solid #d1d5db; border-radius: 6px;
+                padding: 7px 10px; font-size: 13px; background: white;
+            }
+            QTableWidget { background: white; border: 1px solid #e2e8f0; border-radius: 8px; }
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(10)
+
+        self.table = QTableWidget()
+        self.table.setColumnCount(3)
+        self.table.setHorizontalHeaderLabels(["Kod", "Nomi", "1 birlik = so'm"])
+        self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        layout.addWidget(self.table)
+
+        form = QFormLayout()
+        self.code_edit = QLineEdit()
+        self.code_edit.setPlaceholderText("USD")
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("AQSh dollari")
+        self.rate_spin = QDoubleSpinBox()
+        self.rate_spin.setRange(0.0001, 999999999)
+        self.rate_spin.setDecimals(4)
+        self.rate_spin.setSuffix(" so'm")
+        form.addRow("Kod:", self.code_edit)
+        form.addRow("Nomi:", self.name_edit)
+        form.addRow("Kurs:", self.rate_spin)
+        layout.addLayout(form)
+
+        btn_row = QHBoxLayout()
+        save_btn = QPushButton("Saqlash")
+        save_btn.setStyleSheet("background:#3b82f6;color:white;border:none;border-radius:6px;padding:8px 16px;font-weight:bold;")
+        save_btn.clicked.connect(self._save_currency)
+        delete_btn = QPushButton("O'chirish")
+        delete_btn.clicked.connect(self._delete_currency)
+        close_btn = QPushButton("Yopish")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(save_btn)
+        btn_row.addWidget(delete_btn)
+        btn_row.addStretch()
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+        self.table.itemSelectionChanged.connect(self._fill_selected)
+
+    def load_data(self):
+        self.table.setRowCount(0)
+        for row, currency in enumerate(db.get_currencies()):
+            self.table.insertRow(row)
+            code_item = QTableWidgetItem(currency["code"])
+            code_item.setData(Qt.ItemDataRole.UserRole, dict(currency))
+            self.table.setItem(row, 0, code_item)
+            self.table.setItem(row, 1, QTableWidgetItem(currency["name"]))
+            rate_item = QTableWidgetItem(f"{currency['rate_to_uzs']:,.4f}")
+            rate_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.table.setItem(row, 2, rate_item)
+
+    def _selected_currency(self):
+        row = self.table.currentRow()
+        item = self.table.item(row, 0) if row >= 0 else None
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def _fill_selected(self):
+        currency = self._selected_currency()
+        if not currency:
+            return
+        self.code_edit.setText(currency["code"])
+        self.name_edit.setText(currency["name"])
+        self.rate_spin.setValue(currency["rate_to_uzs"])
+        self.code_edit.setEnabled(currency["code"] != "UZS")
+
+    def _save_currency(self):
+        try:
+            db.save_currency(self.code_edit.text(), self.name_edit.text(), self.rate_spin.value())
+            self.code_edit.setEnabled(True)
+            self.load_data()
+        except db.AppError as exc:
+            QMessageBox.warning(self, "Saqlanmadi", str(exc))
+
+    def _delete_currency(self):
+        currency = self._selected_currency()
+        if not currency:
+            return
+        try:
+            db.delete_currency(currency["code"])
+            self.code_edit.clear()
+            self.name_edit.clear()
+            self.code_edit.setEnabled(True)
+            self.load_data()
+        except db.AppError as exc:
+            QMessageBox.warning(self, "O'chirilmadi", str(exc))
+
+
+class SaleCustomerDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Mijoz ma'lumoti")
+        self.setFixedWidth(380)
+        self._build_ui()
+
+    def _build_ui(self):
+        self.setStyleSheet("""
+            QDialog { background: white; }
+            QLabel { color: #374151; font-size: 13px; }
+            QLineEdit {
+                border: 1px solid #d1d5db; border-radius: 6px;
+                padding: 8px 10px; font-size: 13px; background: white;
+            }
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 20, 24, 20)
+        layout.setSpacing(12)
+
+        info = QLabel("Sotuv arxivi uchun mijoz ism-familyasi va telefon raqamini kiriting.")
+        info.setWordWrap(True)
+        layout.addWidget(info)
+
+        form = QFormLayout()
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("Ism-familya")
+        self.phone_edit = QLineEdit()
+        self.phone_edit.setPlaceholderText("+998 XX XXX XX XX")
+        form.addRow("Mijoz:", self.name_edit)
+        form.addRow("Telefon:", self.phone_edit)
+        layout.addLayout(form)
+
+        btns = QHBoxLayout()
+        cancel_btn = QPushButton("Bekor")
+        cancel_btn.clicked.connect(self.reject)
+        save_btn = QPushButton("Davom etish")
+        save_btn.setStyleSheet("background:#3b82f6;color:white;border:none;border-radius:6px;padding:8px 16px;font-weight:bold;")
+        save_btn.clicked.connect(self._save)
+        btns.addStretch()
+        btns.addWidget(cancel_btn)
+        btns.addWidget(save_btn)
+        layout.addLayout(btns)
+
+    def _save(self):
+        if not self.name_edit.text().strip() or not self.phone_edit.text().strip():
+            QMessageBox.warning(self, "Xatolik", "Mijoz ism-familyasi va telefon raqamini kiriting.")
+            return
+        self.accept()
+
+    def get_data(self):
+        return {
+            "name": self.name_edit.text().strip(),
+            "phone": self.phone_edit.text().strip(),
+        }
+
+
+class SalesWidget(QWidget):
+    def __init__(self, user):
+        super().__init__()
+        self.user = user
+        self.cart = []
+        self._build_ui()
+        self.load_data()
+
+    def _build_ui(self):
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(16)
+
+        # ── Left: Search + Products ───────────────────────
+        left = QVBoxLayout()
+
+        search_row = QHBoxLayout()
+        self.search_edit = QLineEdit()
+        self.search_edit.setPlaceholderText("🔍  Mahsulot nomi yoki shtrix-kod... Skaner Enter yuborsa savatga qo'shiladi")
+        self.search_edit.setFixedHeight(40)
+        self.search_edit.setStyleSheet(self._input_style())
+        self.search_edit.textChanged.connect(self._search_products)
+        self.search_edit.returnPressed.connect(self._scan_barcode)
+        search_row.addWidget(self.search_edit)
+        left.addLayout(search_row)
+
+        self.products_table = QTableWidget()
+        self.products_table.setColumnCount(5)
+        self.products_table.setHorizontalHeaderLabels(["Nomi", "Kategoriya", "Narx", "Qoldiq", ""])
+        self.products_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.products_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        self.products_table.setColumnWidth(4, 58)
+        self.products_table.verticalHeader().setDefaultSectionSize(44)
+        self.products_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.products_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.products_table.setAlternatingRowColors(True)
+        self.products_table.setStyleSheet(self._table_style())
+        self.products_table.doubleClicked.connect(self._add_to_cart_from_table)
+        left.addWidget(self.products_table)
+        layout.addLayout(left, 3)
+
+        # ── Right: Cart + Payment ─────────────────────────
+        right = QVBoxLayout()
+        right.setSpacing(10)
+
+        cart_lbl = QLabel("🛒 Savat")
+        cart_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #1e293b;")
+        right.addWidget(cart_lbl)
+
+        self.cart_table = QTableWidget()
+        self.cart_table.setColumnCount(5)
+        self.cart_table.setHorizontalHeaderLabels(["Nomi", "Narx", "Miqdor", "Jami", ""])
+        self.cart_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        for column, width in [(1, 92), (2, 104), (3, 110), (4, 54)]:
+            self.cart_table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+            self.cart_table.setColumnWidth(column, width)
+        self.cart_table.verticalHeader().setDefaultSectionSize(46)
+        self.cart_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.cart_table.setStyleSheet(self._table_style())
+        right.addWidget(self.cart_table)
+
+        # Discount
+        disc_row = QHBoxLayout()
+        disc_lbl = QLabel("Chegirma:")
+        disc_lbl.setFixedWidth(70)
+        self.discount_spin = QDoubleSpinBox()
+        self.discount_spin.setRange(0, 100000000)
+        self.discount_spin.setPrefix("- ")
+        self.discount_spin.setSuffix(" so'm")
+        self.discount_spin.setMinimumHeight(40)
+        self.discount_spin.setMinimumWidth(190)
+        self.discount_spin.setStyleSheet(self._input_style())
+        self.discount_spin.valueChanged.connect(self._update_totals)
+        disc_row.addWidget(disc_lbl)
+        disc_row.addWidget(self.discount_spin)
+        right.addLayout(disc_row)
+
+        # Totals card
+        totals_frame = QFrame()
+        totals_frame.setStyleSheet("""
+            QFrame { background: white; border: 1px solid #e2e8f0;
+                     border-radius: 10px; padding: 4px; }
+        """)
+        totals_layout = QVBoxLayout(totals_frame)
+        totals_layout.setSpacing(6)
+
+        self.subtotal_lbl = QLabel("Jami: 0 so'm")
+        self.subtotal_lbl.setStyleSheet("color: #64748b; font-size: 13px;")
+        self.total_lbl = QLabel("To'lash: 0 so'm")
+        self.total_lbl.setStyleSheet("color: #1e293b; font-size: 20px; font-weight: bold;")
+
+        totals_layout.addWidget(self.subtotal_lbl)
+        totals_layout.addWidget(self.total_lbl)
+        right.addWidget(totals_frame)
+
+        # Payment method
+        pay_row = QHBoxLayout()
+        pay_lbl = QLabel("To'lov:")
+        pay_lbl.setFixedWidth(55)
+        self.payment_combo = QComboBox()
+        self.payment_combo.addItems(["Naqd", "Plastik karta"])
+        self.payment_combo.setStyleSheet(self._input_style())
+        self.payment_combo.currentIndexChanged.connect(self._on_payment_changed)
+        pay_row.addWidget(pay_lbl)
+        pay_row.addWidget(self.payment_combo)
+        right.addLayout(pay_row)
+
+        currency_row = QHBoxLayout()
+        currency_lbl = QLabel("Valyuta:")
+        currency_lbl.setFixedWidth(55)
+        self.currency_combo = QComboBox()
+        self.currency_combo.setStyleSheet(self._input_style())
+        self.currency_combo.currentIndexChanged.connect(self._on_currency_changed)
+        currency_btn = QPushButton("Kurslar")
+        currency_btn.setFixedHeight(34)
+        currency_btn.setStyleSheet("""
+            QPushButton { background: white; color: #1e293b; border: 1px solid #d1d5db;
+                          border-radius: 6px; padding: 0 10px; font-size: 12px; }
+            QPushButton:hover { background: #f8fafc; }
+        """)
+        currency_btn.clicked.connect(self._manage_currencies)
+        currency_row.addWidget(currency_lbl)
+        currency_row.addWidget(self.currency_combo)
+        currency_row.addWidget(currency_btn)
+        right.addLayout(currency_row)
+
+        self.currency_total_lbl = QLabel("")
+        self.currency_total_lbl.setStyleSheet("color: #64748b; font-size: 12px;")
+        right.addWidget(self.currency_total_lbl)
+
+        # Action buttons
+        sell_btn = QPushButton("✅  Sotishni yakunlash")
+        sell_btn.setObjectName("complete_sale_btn")
+        sell_btn.setFixedHeight(48)
+        sell_btn.setStyleSheet("""
+            QPushButton { background: #059669; color: white; font-size: 15px;
+                          font-weight: bold; border: none; border-radius: 8px; }
+            QPushButton:hover { background: #047857; }
+            QPushButton:pressed { background: #065f46; padding-top: 3px; }
+        """)
+        sell_btn.clicked.connect(self._complete_sale)
+        right.addWidget(sell_btn)
+
+        clear_btn = QPushButton("🗑  Savatni tozalash")
+        clear_btn.setObjectName("clear_cart_btn")
+        clear_btn.setFixedHeight(36)
+        clear_btn.setStyleSheet("""
+            QPushButton { background: transparent; color: #ef4444; font-size: 13px;
+                          border: 1px solid #ef4444; border-radius: 6px; }
+            QPushButton:hover { background: #ef4444; color: white; }
+            QPushButton:pressed { background: #991b1b; color: white; padding-top: 3px; }
+        """)
+        clear_btn.clicked.connect(self._clear_cart)
+        right.addWidget(clear_btn)
+
+        layout.addLayout(right, 2)
+
+    def load_data(self):
+        self._load_products()
+        self._load_currencies()
+        set_language(self, self.property("app_language") or "uz")
+
+    def _load_products(self, query=""):
+        if query:
+            products = db.search_products(query)
+        else:
+            products = db.get_all_products()
+
+        self.products_table.setRowCount(0)
+        for row, p in enumerate(products):
+            self.products_table.insertRow(row)
+            self.products_table.setItem(row, 0, QTableWidgetItem(p["name"]))
+            self.products_table.setItem(row, 1, QTableWidgetItem(p["category_name"] or ""))
+            price_item = QTableWidgetItem(f"{p['price']:,.0f} so'm")
+            price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.products_table.setItem(row, 2, price_item)
+            stock_item = QTableWidgetItem(f"{p['stock']} {p['unit']}")
+            if p["stock"] <= 0:
+                stock_item.setForeground(QColor("#ef4444"))
+            self.products_table.setItem(row, 3, stock_item)
+
+            add_btn = QPushButton("+")
+            add_btn.setToolTip("Savatga qo'shish")
+            add_btn.setEnabled(p["stock"] > 0)
+            add_btn.setFixedSize(25, 25)
+            add_btn.setStyleSheet(self._add_button_style())
+            add_btn.clicked.connect(lambda _, r=row: self._add_to_cart(r))
+            add_wrap = QWidget()
+            add_layout = QHBoxLayout(add_wrap)
+            add_layout.setContentsMargins(0, 0, 0, 0)
+            add_layout.setSpacing(0)
+            add_layout.addWidget(add_btn, 0, Qt.AlignmentFlag.AlignCenter)
+            self.products_table.setCellWidget(row, 4, add_wrap)
+            self.products_table.setRowHeight(row, 44)
+            self.products_table.setRowData(row, p) if hasattr(self.products_table, 'setRowData') else None
+            # Store product id in hidden column via item UserRole
+            self.products_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, dict(p))
+        set_language(self, self.property("app_language") or "uz")
+
+    def _load_currencies(self):
+        current = self.currency_combo.currentData() if hasattr(self, "currency_combo") else None
+        self.currency_combo.blockSignals(True)
+        self.currency_combo.clear()
+        for currency in db.get_currencies():
+            self.currency_combo.addItem(f"{currency['code']} - {currency['name']}", dict(currency))
+        if current:
+            idx = self.currency_combo.findText(current["code"], Qt.MatchFlag.MatchStartsWith)
+            if idx >= 0:
+                self.currency_combo.setCurrentIndex(idx)
+        self.currency_combo.blockSignals(False)
+        self._on_currency_changed()
+
+    def _selected_currency(self):
+        return self.currency_combo.currentData() or {"code": "UZS", "rate_to_uzs": 1}
+
+    def _on_currency_changed(self):
+        self._update_totals()
+
+    def _on_payment_changed(self):
+        self._update_totals()
+
+    def _manage_currencies(self):
+        dlg = CurrencyDialog(self)
+        dlg.exec()
+        self._load_currencies()
+
+    def _search_products(self, text):
+        self._load_products(text)
+
+    def _scan_barcode(self):
+        barcode = self.search_edit.text().strip()
+        if not barcode:
+            return
+        product = db.get_product_by_barcode(barcode)
+        if not product:
+            QMessageBox.warning(self, "Topilmadi", f"'{barcode}' shtrix-kodli mahsulot topilmadi.")
+            return
+        self._add_product_to_cart(dict(product))
+        self.search_edit.clear()
+        self.search_edit.setFocus()
+
+    def _add_to_cart_from_table(self, index):
+        self._add_to_cart(index.row())
+
+    def _add_to_cart(self, row):
+        item = self.products_table.item(row, 0)
+        if not item:
+            return
+        product = item.data(Qt.ItemDataRole.UserRole)
+        if not product:
+            return
+        self._add_product_to_cart(product)
+
+    def _add_product_to_cart(self, product):
+        if product["stock"] <= 0:
+            QMessageBox.warning(self, "Qoldiq yo'q", "Bu mahsulot omborda qolmagan.")
+            return
+
+        # Check if already in cart
+        for cart_item in self.cart:
+            if cart_item["product_id"] == product["id"]:
+                if cart_item["quantity"] >= cart_item["stock"]:
+                    QMessageBox.warning(
+                        self, "Qoldiq yetarli emas",
+                        f"{product['name']} uchun omborda {cart_item['stock']} ta bor."
+                    )
+                    return
+                cart_item["quantity"] += 1
+                cart_item["subtotal"] = cart_item["quantity"] * cart_item["price"]
+                self._refresh_cart()
+                return
+
+        self.cart.append({
+            "product_id": product["id"],
+            "name": product["name"],
+            "price": product["price"],
+            "quantity": 1,
+            "subtotal": product["price"],
+            "stock": product["stock"],
+        })
+        self._refresh_cart()
+
+    def _refresh_cart(self):
+        self.cart_table.setRowCount(0)
+        for row, item in enumerate(self.cart):
+            self.cart_table.insertRow(row)
+            self.cart_table.setItem(row, 0, QTableWidgetItem(item["name"]))
+            self.cart_table.setItem(row, 1, QTableWidgetItem(f"{item['price']:,.0f}"))
+
+            qty_spin = QSpinBox()
+            qty_spin.setRange(1, item["stock"])
+            qty_spin.setValue(item["quantity"])
+            qty_spin.setMinimumHeight(34)
+            qty_spin.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            qty_spin.setStyleSheet(self._qty_style())
+            qty_spin.valueChanged.connect(lambda val, r=row: self._update_qty(r, val))
+            self.cart_table.setCellWidget(row, 2, qty_spin)
+
+            subtotal_item = QTableWidgetItem(f"{item['subtotal']:,.0f}")
+            subtotal_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            self.cart_table.setItem(row, 3, subtotal_item)
+
+            del_btn = QPushButton("✕")
+            del_btn.setFixedSize(30, 30)
+            del_btn.setStyleSheet(self._delete_button_style())
+            del_btn.clicked.connect(lambda _, r=row: self._remove_from_cart(r))
+            self.cart_table.setCellWidget(row, 4, del_btn)
+            self.cart_table.setRowHeight(row, 46)
+
+        self._update_totals()
+
+    def _update_qty(self, row, val):
+        if row < len(self.cart):
+            self.cart[row]["quantity"] = val
+            self.cart[row]["subtotal"] = val * self.cart[row]["price"]
+            subtotal_item = self.cart_table.item(row, 3)
+            if subtotal_item:
+                subtotal_item.setText(f"{self.cart[row]['subtotal']:,.0f}")
+            self._update_totals()
+
+    def _remove_from_cart(self, row):
+        if row < len(self.cart):
+            self.cart.pop(row)
+            self._refresh_cart()
+
+    def _update_totals(self):
+        subtotal = sum(i["subtotal"] for i in self.cart)
+        if self.discount_spin.value() > subtotal:
+            self.discount_spin.blockSignals(True)
+            self.discount_spin.setValue(subtotal)
+            self.discount_spin.blockSignals(False)
+        discount = self.discount_spin.value()
+        total = max(0, subtotal - discount)
+        self.subtotal_lbl.setText(f"Jami: {subtotal:,.0f} so'm")
+        self.total_lbl.setText(f"To'lash: {total:,.0f} so'm")
+        currency = self._selected_currency()
+        rate = currency["rate_to_uzs"] or 1
+        self.currency_total_lbl.setText(
+            f"{currency['code']} bo'yicha: {total / rate:,.2f} {currency['code']} "
+            f"(kurs: {rate:,.2f} so'm)"
+        )
+
+    def _complete_sale(self):
+        if not self.cart:
+            QMessageBox.warning(self, "Xatolik", "Savat bo'sh!")
+            return
+
+        subtotal = sum(i["subtotal"] for i in self.cart)
+        discount = self.discount_spin.value()
+        total = max(0, subtotal - discount)
+        currency = self._selected_currency()
+        rate = currency["rate_to_uzs"] or 1
+        payment = self.payment_combo.currentText().lower()
+
+        customer_id, customer_name, customer_phone = None, None, None
+
+        effective_paid = total
+        effective_paid_original = total / rate
+
+        try:
+            sale_id = db.create_sale(
+                customer_id=customer_id,
+                cashier_id=self.user["id"],
+                items=self.cart,
+                total=subtotal,
+                discount=discount,
+                paid=effective_paid,
+                payment_method=payment,
+                currency_code=currency["code"],
+                exchange_rate=rate,
+                paid_original=effective_paid_original,
+                customer_name=customer_name,
+                customer_phone=customer_phone,
+            )
+        except db.AppError as exc:
+            QMessageBox.warning(self, "Sotuv yakunlanmadi", str(exc))
+            self._load_products(self.search_edit.text())
+            return
+
+        msg = (
+            f"✅ Sotuv #{sale_id} muvaffaqiyatli!\n\n"
+            f"Jami: {subtotal:,.0f} so'm\n"
+            f"Chegirma: {discount:,.0f} so'm\n"
+            f"To'lash: {total:,.0f} so'm\n"
+            f"To'lov turi: {self.payment_combo.currentText()}\n"
+            f"Valyuta: {effective_paid_original:,.2f} {currency['code']}"
+        )
+        QMessageBox.information(self, "Sotuv yakunlandi", msg)
+        self._clear_cart()
+        self._load_products()
+
+    def _clear_cart(self):
+        self.cart.clear()
+        self.cart_table.setRowCount(0)
+        self.discount_spin.setValue(0)
+        self._update_totals()
+
+    def _input_style(self):
+        return """
+            QLineEdit, QComboBox, QDoubleSpinBox, QSpinBox {
+                background: white; border: 1px solid #d1d5db;
+                border-radius: 6px; padding: 6px 10px;
+                font-size: 14px; color: #1e293b; min-height: 28px;
+            }
+            QLineEdit:focus, QComboBox:focus { border-color: #3b82f6; }
+        """
+
+    def _add_button_style(self):
+        return """
+            QPushButton {
+                background: #3b82f6; color: white; border: none;
+                border-radius: 6px; padding: 0;
+                font-size: 15px; font-weight: bold;
+            }
+            QPushButton:hover { background: #2563eb; }
+            QPushButton:pressed {
+                background: #1d4ed8;
+                padding-top: 2px;
+            }
+            QPushButton:disabled { background: #cbd5e1; color: #64748b; }
+        """
+
+    def _qty_style(self):
+        return """
+            QSpinBox {
+                background: white; color: #1e293b;
+                border: 1px solid #cbd5e1; border-radius: 6px;
+                padding: 3px 8px; font-size: 12px; font-weight: 600;
+            }
+            QSpinBox:focus { border-color: #3b82f6; }
+            QSpinBox::up-button, QSpinBox::down-button { width: 20px; }
+        """
+
+    def _delete_button_style(self):
+        return """
+            QPushButton {
+                background: #fee2e2; color: #ef4444; border: none;
+                border-radius: 6px; font-weight: bold; font-size: 13px;
+            }
+            QPushButton:hover { background: #ef4444; color: white; }
+            QPushButton:pressed {
+                background: #991b1b;
+                color: white;
+                padding-top: 3px;
+            }
+        """
+
+    def _table_style(self):
+        return """
+            QTableWidget { background: white; border: 1px solid #e2e8f0;
+                           border-radius: 8px; gridline-color: #f1f5f9;
+                           font-size: 13px; }
+            QTableWidget::item { padding: 6px 8px; }
+            QTableWidget::item:selected { background: #dbeafe; color: #1e40af; }
+            QHeaderView::section { background: #f8fafc; border: none;
+                                   border-bottom: 1px solid #e2e8f0;
+                                   padding: 8px; font-weight: bold; color: #64748b; }
+            QTableWidget::item:alternate { background: #f8fafc; }
+        """
