@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (
     QLabel, QPushButton, QLineEdit, QTableWidget, QTabWidget,
-    QComboBox, QGroupBox
+    QComboBox, QGroupBox, QCheckBox
 )
 
 
@@ -27,6 +27,8 @@ TRANSLATIONS = {
         "Chiqish": "Logout",
         "Yangilash": "Refresh",
         "Tarixni tozalash": "Clear history",
+        "Kirish tarixini tozalash": "Clear login history",
+        "Barcha kirish tarixi o'chirilsinmi?": "Delete all login history?",
         "Sana:": "Date:",
         "Bugun": "Today",
         "Haftalik": "Weekly",
@@ -43,6 +45,11 @@ TRANSLATIONS = {
         "Cheklar": "Checks",
         "Tanlangan hisobot grafigi": "Selected report chart",
         "Nomi": "Name",
+        "Kod": "Code",
+        "Kod:": "Code:",
+        "Kurs:": "Rate:",
+        "Valyuta kurslari": "Currency rates",
+        "1 birlik = so'm": "1 unit = UZS",
         "Mahsulot": "Product",
         "Qoldiq": "Stock",
         "Amal": "Action",
@@ -63,6 +70,7 @@ TRANSLATIONS = {
         "Username": "Username",
         "Role": "Role",
         "Yaratilgan": "Created",
+        "Mijoz": "Customer",
         "Telefon": "Phone",
         "Qarz": "Debt",
         "Jami olingan": "Total received",
@@ -86,8 +94,11 @@ TRANSLATIONS = {
         "Templatelar": "Templates",
         "+ Mahsulot qo'shish": "+ Add product",
         "Jarayonga": "Process",
+        "Jarayonga o'tkazish": "Move to process",
+        "Jarayonni tahrirlash": "Edit process",
         "Tahrir": "Edit",
         "O'chir": "Delete",
+        "O'chirish": "Delete",
         "Qaytarish": "Return",
         "Bor mahsulotlarga": "Available",
         "Sotuvni yakunlash": "Complete sale",
@@ -114,6 +125,31 @@ TRANSLATIONS = {
         "Kurslar": "Rates",
         "Sotishni yakunlash": "Complete sale",
         "Savatni tozalash": "Clear cart",
+        "Sotilganlarni tozalash": "Clear sold items",
+        "Hisobotlarni tozalash": "Clear reports",
+        "Barcha sotuv tarixi va sotilganlar ro'yxati tozalansinmi?": "Clear all sales history and the sold items list?",
+        "Barcha sotuv tarixi va hisobotlar tozalansinmi?": "Clear all sales history and reports?",
+        "Tozalandi": "Cleared",
+        "Tozalanmadi": "Not cleared",
+        "Yangilandi": "Updated",
+        "Yangilanmadi": "Not updated",
+        "Jarayondagi mahsulot ma'lumotlari yangilandi.": "In-process product information was updated.",
+        "Sotilganlar ro'yxati tozalandi.": "Sold items list was cleared.",
+        "Barcha hisobotlar tozalandi.": "All reports were cleared.",
+        "Mijoz ma'lumoti": "Customer information",
+        "Mijoz ma'lumotini sotuv arxivida saqlash ixtiyoriy.": "Saving customer information in the sales archive is optional.",
+        "Mijoz nomi va telefonini kiritish": "Enter customer name and phone",
+        "Ism-familya": "Full name",
+        "Mijoz:": "Customer:",
+        "Xatolik": "Error",
+        "Savat bo'sh!": "Cart is empty!",
+        "Sotuv yakunlanmadi": "Sale was not completed",
+        "Sotuv yakunlandi": "Sale completed",
+        "muvaffaqiyatli!": "completed successfully!",
+        "so'm": "UZS",
+        "bo'yicha:": "as:",
+        "kurs:": "rate:",
+        "To'lov turi:": "Payment type:",
         "Mahsulot qidirish...": "Search product...",
         "Qidirish...": "Search...",
         "Mahsulot nomi yoki shtrix-kod... Skaner Enter yuborsa savatga qo'shiladi": "Product name or barcode... Scanner Enter adds to cart",
@@ -163,6 +199,8 @@ TRANSLATIONS = {
         "Chiqish": "Выход",
         "Yangilash": "Обновить",
         "Tarixni tozalash": "Очистить историю",
+        "Kirish tarixini tozalash": "Очистить историю входов",
+        "Barcha kirish tarixi o'chirilsinmi?": "Удалить всю историю входов?",
         "Sana:": "Дата:",
         "Bugun": "Сегодня",
         "Haftalik": "Неделя",
@@ -179,6 +217,11 @@ TRANSLATIONS = {
         "Cheklar": "Чеки",
         "Tanlangan hisobot grafigi": "График выбранного отчета",
         "Nomi": "Название",
+        "Kod": "Код",
+        "Kod:": "Код:",
+        "Kurs:": "Курс:",
+        "Valyuta kurslari": "Курсы валют",
+        "1 birlik = so'm": "1 единица = сум",
         "Mahsulot": "Товар",
         "Qoldiq": "Остаток",
         "Amal": "Действие",
@@ -199,6 +242,7 @@ TRANSLATIONS = {
         "Username": "Логин",
         "Role": "Роль",
         "Yaratilgan": "Создано",
+        "Mijoz": "Клиент",
         "Telefon": "Телефон",
         "Qarz": "Долг",
         "Jami olingan": "Всего получено",
@@ -219,8 +263,11 @@ TRANSLATIONS = {
         "Templatelar": "Шаблоны",
         "+ Mahsulot qo'shish": "+ Добавить товар",
         "Jarayonga": "В процесс",
+        "Jarayonga o'tkazish": "Перевести в процесс",
+        "Jarayonni tahrirlash": "Изменить процесс",
         "Tahrir": "Изменить",
         "O'chir": "Удалить",
+        "O'chirish": "Удалить",
         "Qaytarish": "Вернуть",
         "Bor mahsulotlarga": "В наличие",
         "Sotuvni yakunlash": "Завершить продажу",
@@ -247,6 +294,31 @@ TRANSLATIONS = {
         "Kurslar": "Курсы",
         "Sotishni yakunlash": "Завершить продажу",
         "Savatni tozalash": "Очистить корзину",
+        "Sotilganlarni tozalash": "Очистить проданные",
+        "Hisobotlarni tozalash": "Очистить отчеты",
+        "Barcha sotuv tarixi va sotilganlar ro'yxati tozalansinmi?": "Очистить всю историю продаж и список проданных товаров?",
+        "Barcha sotuv tarixi va hisobotlar tozalansinmi?": "Очистить всю историю продаж и отчеты?",
+        "Tozalandi": "Очищено",
+        "Tozalanmadi": "Не очищено",
+        "Yangilandi": "Обновлено",
+        "Yangilanmadi": "Не обновлено",
+        "Jarayondagi mahsulot ma'lumotlari yangilandi.": "Данные товара в процессе обновлены.",
+        "Sotilganlar ro'yxati tozalandi.": "Список проданных товаров очищен.",
+        "Barcha hisobotlar tozalandi.": "Все отчеты очищены.",
+        "Mijoz ma'lumoti": "Данные клиента",
+        "Mijoz ma'lumotini sotuv arxivida saqlash ixtiyoriy.": "Сохранять данные клиента в архиве продаж необязательно.",
+        "Mijoz nomi va telefonini kiritish": "Ввести имя и телефон клиента",
+        "Ism-familya": "ФИО",
+        "Mijoz:": "Клиент:",
+        "Xatolik": "Ошибка",
+        "Savat bo'sh!": "Корзина пуста!",
+        "Sotuv yakunlanmadi": "Продажа не завершена",
+        "Sotuv yakunlandi": "Продажа завершена",
+        "muvaffaqiyatli!": "успешно завершена!",
+        "so'm": "сум",
+        "bo'yicha:": "по:",
+        "kurs:": "курс:",
+        "To'lov turi:": "Тип оплаты:",
         "Mahsulot qidirish...": "Поиск товара...",
         "Qidirish...": "Поиск...",
         "Mahsulot nomi yoki shtrix-kod... Skaner Enter yuborsa savatga qo'shiladi": "Название товара или штрихкод... Enter со сканера добавит в корзину",
@@ -272,10 +344,10 @@ def is_translatable(text):
 
 def set_language(widget, language="uz"):
     widget.setProperty("app_language", language)
-    for child in widget.findChildren((QLabel, QPushButton, QLineEdit, QGroupBox)):
+    for child in widget.findChildren((QLabel, QPushButton, QLineEdit, QGroupBox, QCheckBox)):
         if child.property("i18n_skip"):
             continue
-        if isinstance(child, (QLabel, QPushButton, QGroupBox)):
+        if isinstance(child, (QLabel, QPushButton, QGroupBox, QCheckBox)):
             original = child.property("i18n_original_text")
             if original is None:
                 if not is_translatable(child.text()):
@@ -339,3 +411,7 @@ def set_language(widget, language="uz"):
             if not is_translatable(original):
                 continue
             combo.setItemText(index, t(original, language))
+
+    language_hook = getattr(widget, "_language_changed", None)
+    if callable(language_hook):
+        language_hook(language)

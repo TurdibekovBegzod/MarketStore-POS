@@ -2,20 +2,22 @@ from PyQt6.QtWidgets import (
     QWidget, QHBoxLayout, QVBoxLayout, QLabel, QLineEdit,
     QPushButton, QTableWidget, QTableWidgetItem, QComboBox,
     QFrame, QMessageBox, QHeaderView, QSpinBox, QDoubleSpinBox,
-    QDialog, QFormLayout
+    QDialog, QFormLayout, QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QFont, QColor
 import database as db
-from ui.i18n import set_language
+from ui.i18n import set_language, t
 
 
 class CurrencyDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.language = (parent.property("app_language") if parent else None) or "uz"
         self.setWindowTitle("Valyuta kurslari")
         self.setFixedWidth(520)
         self._build_ui()
+        self._apply_language()
         self.load_data()
 
     def _build_ui(self):
@@ -70,6 +72,11 @@ class CurrencyDialog(QDialog):
 
         self.table.itemSelectionChanged.connect(self._fill_selected)
 
+    def _apply_language(self):
+        self.setWindowTitle(t("Valyuta kurslari", self.language))
+        self.rate_spin.setSuffix(" " + t("so'm", self.language))
+        set_language(self, self.language)
+
     def load_data(self):
         self.table.setRowCount(0)
         for row, currency in enumerate(db.get_currencies()):
@@ -121,26 +128,36 @@ class CurrencyDialog(QDialog):
 class SaleCustomerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
+        self.language = (parent.property("app_language") if parent else None) or "uz"
         self.setWindowTitle("Mijoz ma'lumoti")
         self.setFixedWidth(380)
         self._build_ui()
+        self._apply_language()
 
     def _build_ui(self):
         self.setStyleSheet("""
             QDialog { background: white; }
             QLabel { color: #374151; font-size: 13px; }
+            QCheckBox { color: #1e293b; font-size: 13px; font-weight: 600; }
             QLineEdit {
                 border: 1px solid #d1d5db; border-radius: 6px;
                 padding: 8px 10px; font-size: 13px; background: white;
+            }
+            QLineEdit:disabled {
+                background: #f1f5f9; color: #94a3b8;
             }
         """)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(12)
 
-        info = QLabel("Sotuv arxivi uchun mijoz ism-familyasi va telefon raqamini kiriting.")
+        info = QLabel("Mijoz ma'lumotini sotuv arxivida saqlash ixtiyoriy.")
         info.setWordWrap(True)
         layout.addWidget(info)
+
+        self.customer_check = QCheckBox("Mijoz nomi va telefonini kiritish")
+        self.customer_check.toggled.connect(self._toggle_customer_fields)
+        layout.addWidget(self.customer_check)
 
         form = QFormLayout()
         self.name_edit = QLineEdit()
@@ -154,25 +171,32 @@ class SaleCustomerDialog(QDialog):
         btns = QHBoxLayout()
         cancel_btn = QPushButton("Bekor")
         cancel_btn.clicked.connect(self.reject)
-        save_btn = QPushButton("Davom etish")
+        save_btn = QPushButton("OK")
         save_btn.setStyleSheet("background:#3b82f6;color:white;border:none;border-radius:6px;padding:8px 16px;font-weight:bold;")
-        save_btn.clicked.connect(self._save)
+        save_btn.clicked.connect(self.accept)
         btns.addStretch()
         btns.addWidget(cancel_btn)
         btns.addWidget(save_btn)
         layout.addLayout(btns)
+        self._toggle_customer_fields(False)
 
-    def _save(self):
-        if not self.name_edit.text().strip() or not self.phone_edit.text().strip():
-            QMessageBox.warning(self, "Xatolik", "Mijoz ism-familyasi va telefon raqamini kiriting.")
-            return
-        self.accept()
+    def _toggle_customer_fields(self, enabled):
+        self.name_edit.setEnabled(enabled)
+        self.phone_edit.setEnabled(enabled)
+        if enabled:
+            self.name_edit.setFocus()
 
     def get_data(self):
+        if not self.customer_check.isChecked():
+            return {"name": None, "phone": None}
         return {
-            "name": self.name_edit.text().strip(),
-            "phone": self.phone_edit.text().strip(),
+            "name": self.name_edit.text().strip() or None,
+            "phone": self.phone_edit.text().strip() or None,
         }
+
+    def _apply_language(self):
+        self.setWindowTitle(t("Mijoz ma'lumoti", self.language))
+        set_language(self, self.language)
 
 
 class SalesWidget(QWidget):
@@ -193,7 +217,7 @@ class SalesWidget(QWidget):
 
         search_row = QHBoxLayout()
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("🔍  Mahsulot nomi yoki shtrix-kod... Skaner Enter yuborsa savatga qo'shiladi")
+        self.search_edit.setPlaceholderText("Mahsulot nomi yoki shtrix-kod... Skaner Enter yuborsa savatga qo'shiladi")
         self.search_edit.setFixedHeight(40)
         self.search_edit.setStyleSheet(self._input_style())
         self.search_edit.textChanged.connect(self._search_products)
@@ -220,7 +244,7 @@ class SalesWidget(QWidget):
         right = QVBoxLayout()
         right.setSpacing(10)
 
-        cart_lbl = QLabel("🛒 Savat")
+        cart_lbl = QLabel("Savat")
         cart_lbl.setStyleSheet("font-size: 15px; font-weight: bold; color: #1e293b;")
         right.addWidget(cart_lbl)
 
@@ -261,9 +285,9 @@ class SalesWidget(QWidget):
         totals_layout = QVBoxLayout(totals_frame)
         totals_layout.setSpacing(6)
 
-        self.subtotal_lbl = QLabel("Jami: 0 so'm")
+        self.subtotal_lbl = QLabel("")
         self.subtotal_lbl.setStyleSheet("color: #64748b; font-size: 13px;")
-        self.total_lbl = QLabel("To'lash: 0 so'm")
+        self.total_lbl = QLabel("")
         self.total_lbl.setStyleSheet("color: #1e293b; font-size: 20px; font-weight: bold;")
 
         totals_layout.addWidget(self.subtotal_lbl)
@@ -306,7 +330,7 @@ class SalesWidget(QWidget):
         right.addWidget(self.currency_total_lbl)
 
         # Action buttons
-        sell_btn = QPushButton("✅  Sotishni yakunlash")
+        sell_btn = QPushButton("Sotishni yakunlash")
         sell_btn.setObjectName("complete_sale_btn")
         sell_btn.setFixedHeight(48)
         sell_btn.setStyleSheet("""
@@ -318,7 +342,7 @@ class SalesWidget(QWidget):
         sell_btn.clicked.connect(self._complete_sale)
         right.addWidget(sell_btn)
 
-        clear_btn = QPushButton("🗑  Savatni tozalash")
+        clear_btn = QPushButton("Savatni tozalash")
         clear_btn.setObjectName("clear_cart_btn")
         clear_btn.setFixedHeight(36)
         clear_btn.setStyleSheet("""
@@ -351,7 +375,7 @@ class SalesWidget(QWidget):
             price_item = QTableWidgetItem(f"{p['price']:,.0f} so'm")
             price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.products_table.setItem(row, 2, price_item)
-            stock_item = QTableWidgetItem(f"{p['stock']} {p['unit']}")
+            stock_item = QTableWidgetItem(f"{p['stock']}")
             if p["stock"] <= 0:
                 stock_item.setForeground(QColor("#ef4444"))
             self.products_table.setItem(row, 3, stock_item)
@@ -394,6 +418,17 @@ class SalesWidget(QWidget):
         self._update_totals()
 
     def _on_payment_changed(self):
+        self._update_totals()
+
+    def _language(self):
+        return self.property("app_language") or "uz"
+
+    def _money_unit(self):
+        return t("so'm", self._language())
+
+    def _language_changed(self, language):
+        self.setProperty("app_language", language)
+        self.discount_spin.setSuffix(f" {self._money_unit()}")
         self._update_totals()
 
     def _manage_currencies(self):
@@ -508,18 +543,22 @@ class SalesWidget(QWidget):
             self.discount_spin.blockSignals(False)
         discount = self.discount_spin.value()
         total = max(0, subtotal - discount)
-        self.subtotal_lbl.setText(f"Jami: {subtotal:,.0f} so'm")
-        self.total_lbl.setText(f"To'lash: {total:,.0f} so'm")
+        language = self._language()
+        money_unit = self._money_unit()
+        pay_label = t("To'lash:", language)
+        self.subtotal_lbl.setText(f"{t('Jami', language)}: {subtotal:,.0f} {money_unit}")
+        self.total_lbl.setText(f"{pay_label} {total:,.0f} {money_unit}")
         currency = self._selected_currency()
         rate = currency["rate_to_uzs"] or 1
+        currency_by_label = t("bo'yicha:", language)
         self.currency_total_lbl.setText(
-            f"{currency['code']} bo'yicha: {total / rate:,.2f} {currency['code']} "
-            f"(kurs: {rate:,.2f} so'm)"
+            f"{currency['code']} {currency_by_label} {total / rate:,.2f} {currency['code']} "
+            f"({t('kurs:', language)} {rate:,.2f} {money_unit})"
         )
 
     def _complete_sale(self):
         if not self.cart:
-            QMessageBox.warning(self, "Xatolik", "Savat bo'sh!")
+            QMessageBox.warning(self, t("Xatolik", self._language()), t("Savat bo'sh!", self._language()))
             return
 
         subtotal = sum(i["subtotal"] for i in self.cart)
@@ -530,6 +569,12 @@ class SalesWidget(QWidget):
         payment = self.payment_combo.currentText().lower()
 
         customer_id, customer_name, customer_phone = None, None, None
+        customer_dlg = SaleCustomerDialog(self)
+        if customer_dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        customer_data = customer_dlg.get_data()
+        customer_name = customer_data["name"]
+        customer_phone = customer_data["phone"]
 
         effective_paid = total
         effective_paid_original = total / rate
@@ -550,19 +595,23 @@ class SalesWidget(QWidget):
                 customer_phone=customer_phone,
             )
         except db.AppError as exc:
-            QMessageBox.warning(self, "Sotuv yakunlanmadi", str(exc))
+            QMessageBox.warning(self, t("Sotuv yakunlanmadi", self._language()), str(exc))
             self._load_products(self.search_edit.text())
             return
 
+        language = self._language()
+        money_unit = self._money_unit()
+        pay_label = t("To'lash:", language)
+        payment_label = t("To'lov turi:", language)
         msg = (
-            f"✅ Sotuv #{sale_id} muvaffaqiyatli!\n\n"
-            f"Jami: {subtotal:,.0f} so'm\n"
-            f"Chegirma: {discount:,.0f} so'm\n"
-            f"To'lash: {total:,.0f} so'm\n"
-            f"To'lov turi: {self.payment_combo.currentText()}\n"
-            f"Valyuta: {effective_paid_original:,.2f} {currency['code']}"
+            f"{t('Sotuv', language)} #{sale_id} {t('muvaffaqiyatli!', language)}\n\n"
+            f"{t('Jami', language)}: {subtotal:,.0f} {money_unit}\n"
+            f"{t('Chegirma:', language)} {discount:,.0f} {money_unit}\n"
+            f"{pay_label} {total:,.0f} {money_unit}\n"
+            f"{payment_label} {self.payment_combo.currentText()}\n"
+            f"{t('Valyuta:', language)} {effective_paid_original:,.2f} {currency['code']}"
         )
-        QMessageBox.information(self, "Sotuv yakunlandi", msg)
+        QMessageBox.information(self, t("Sotuv yakunlandi", language), msg)
         self._clear_cart()
         self._load_products()
 

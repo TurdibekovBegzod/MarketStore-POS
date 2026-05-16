@@ -3,12 +3,12 @@ from datetime import date, timedelta
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QDateEdit, QComboBox,
-    QGridLayout, QFrame, QSizePolicy
+    QGridLayout, QFrame, QSizePolicy, QMessageBox
 )
 from PyQt6.QtCore import Qt, QDate, QPointF
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont
 import database as db
-from ui.i18n import set_language
+from ui.i18n import set_language, t
 
 
 class LineChart(QWidget):
@@ -115,6 +115,16 @@ class ReportsWidget(QWidget):
         today_btn.setStyleSheet("background:#3b82f6;color:white;border:none;border-radius:6px;padding:7px 16px;")
         today_btn.clicked.connect(lambda: self.date_edit.setDate(QDate.currentDate()))
         toolbar.addWidget(today_btn)
+        clear_reports_btn = QPushButton("Hisobotlarni tozalash")
+        clear_reports_btn.setObjectName("danger_clear_reports_btn")
+        clear_reports_btn.setFixedHeight(36)
+        clear_reports_btn.setStyleSheet("""
+            QPushButton { background:#dc2626;color:white;border:none;border-radius:6px;padding:7px 16px;font-weight:bold; }
+            QPushButton:hover { background:#b91c1c; }
+            QPushButton:pressed { background:#991b1b;padding-top:2px; }
+        """)
+        clear_reports_btn.clicked.connect(self._clear_reports)
+        toolbar.addWidget(clear_reports_btn)
         toolbar.addStretch()
         layout.addLayout(toolbar)
 
@@ -308,6 +318,13 @@ class ReportsWidget(QWidget):
                     QPushButton:hover {{ background:{theme['sidebar_alt']}; color:{theme['nav_text']}; }}
                     QPushButton:pressed {{ background:#1d4ed8; padding-top:9px; }}
                 """)
+            elif button.objectName() == "danger_clear_reports_btn":
+                button.setMinimumHeight(38)
+                button.setStyleSheet("""
+                    QPushButton { background:#dc2626;color:white;border:none;border-radius:6px;padding:7px 16px;font-weight:bold; }
+                    QPushButton:hover { background:#b91c1c; }
+                    QPushButton:pressed { background:#991b1b;padding-top:2px; }
+                """)
         self.entity_table.setStyleSheet(self._table_style(theme))
 
     def load_data(self):
@@ -331,6 +348,23 @@ class ReportsWidget(QWidget):
         self.overall_rows = filled
         self._refresh_report_panel(start_date, end_date, filled)
         set_language(self, self.property("app_language") or "uz")
+
+    def _clear_reports(self):
+        language = self.property("app_language") or "uz"
+        reply = QMessageBox.question(
+            self,
+            t("Hisobotlarni tozalash", language),
+            t("Barcha sotuv tarixi va hisobotlar tozalansinmi?", language),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            db.clear_sales_history()
+            self.load_data()
+            QMessageBox.information(self, t("Tozalandi", language), t("Barcha hisobotlar tozalandi.", language))
+        except db.AppError as exc:
+            QMessageBox.warning(self, t("Tozalanmadi", language), str(exc))
 
     def _refresh_report_panel(self, start_date, end_date, overall_rows):
         if self.detail_mode == "overall":

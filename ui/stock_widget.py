@@ -68,7 +68,7 @@ class StockWidget(QWidget):
             name_item = QTableWidgetItem(product["name"])
             name_item.setData(Qt.ItemDataRole.UserRole, dict(product))
             self.table.setItem(row, 0, name_item)
-            self.table.setItem(row, 1, QTableWidgetItem(f"{product['stock']} {product['unit']}"))
+            self.table.setItem(row, 1, QTableWidgetItem(f"{product['stock']}"))
 
             btn = QPushButton("+ Kirim")
             btn.setMinimumWidth(94)

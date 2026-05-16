@@ -429,6 +429,9 @@ class MainWindow(QMainWindow):
             elif isinstance(widget, QTabWidget):
                 widget.setStyleSheet(self._tab_style(theme))
             elif isinstance(widget, QAbstractButton):
+                if widget.objectName().startswith("danger_clear"):
+                    widget.setStyleSheet(self._danger_button_style())
+                    continue
                 widget.setStyleSheet(self._button_style(theme))
             elif isinstance(widget, QFrame):
                 widget.setStyleSheet(self._panel_style(theme))
@@ -573,6 +576,22 @@ class MainWindow(QMainWindow):
                 color: #94a3b8;
                 border-color: #cbd5e1;
             }}
+        """
+
+    def _danger_button_style(self):
+        return """
+            QPushButton {
+                background:#dc2626;
+                color:white;
+                border:none;
+                border-radius:6px;
+                padding:6px 12px;
+                font-size:12px;
+                font-weight:bold;
+            }
+            QPushButton:hover { background:#b91c1c; }
+            QPushButton:pressed { background:#991b1b; padding-top:7px; }
+            QPushButton:disabled { background:#fecaca; color:#7f1d1d; }
         """
 
     def _table_style(self, theme):

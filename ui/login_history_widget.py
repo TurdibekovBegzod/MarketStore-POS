@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 import database as db
-from ui.i18n import set_language
+from ui.i18n import set_language, t
 
 
 class LoginHistoryWidget(QWidget):
@@ -20,8 +20,11 @@ class LoginHistoryWidget(QWidget):
         toolbar = QHBoxLayout()
         toolbar.addStretch()
         clear_btn = QPushButton("Tarixni tozalash")
+        clear_btn.setObjectName("danger_clear_login_history_btn")
         clear_btn.setFixedHeight(36)
-        clear_btn.setStyleSheet("background:#fef2f2;color:#b91c1c;border:1px solid #fca5a5;border-radius:6px;padding:0 16px;font-weight:bold;")
+        clear_btn.setStyleSheet(
+            "background:#dc2626;color:white;border:none;border-radius:6px;padding:0 16px;font-weight:bold;"
+        )
         clear_btn.clicked.connect(self._clear_history)
         toolbar.addWidget(clear_btn)
         refresh_btn = QPushButton("Yangilash")
@@ -65,10 +68,11 @@ class LoginHistoryWidget(QWidget):
         set_language(self, self.property("app_language") or "uz")
 
     def _clear_history(self):
+        language = self.property("app_language") or "uz"
         reply = QMessageBox.question(
             self,
-            "Kirish tarixini tozalash",
-            "Barcha kirish tarixi o'chirilsinmi?",
+            t("Kirish tarixini tozalash", language),
+            t("Barcha kirish tarixi o'chirilsinmi?", language),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:

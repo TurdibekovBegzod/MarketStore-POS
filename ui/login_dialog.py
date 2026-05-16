@@ -13,7 +13,12 @@ class LoginDialog(QDialog):
         self.setWindowTitle("Market Store POS — Kirish")
         self.setMinimumSize(420, 430)
         self.resize(420, 450)
-        self.setWindowFlags(Qt.WindowType.Window | Qt.WindowType.WindowTitleHint)
+        self.setWindowFlags(
+            Qt.WindowType.Window
+            | Qt.WindowType.WindowTitleHint
+            | Qt.WindowType.WindowSystemMenuHint
+            | Qt.WindowType.WindowCloseButtonHint
+        )
         self._build_ui()
 
     def _build_ui(self):
