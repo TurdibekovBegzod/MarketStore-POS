@@ -1,11 +1,11 @@
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
+    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QLabel,
     QPushButton, QTableWidget, QTableWidgetItem, QDialog,
     QFormLayout, QSpinBox, QMessageBox, QHeaderView, QComboBox
 )
 from PyQt6.QtCore import Qt
 import database as db
-from ui.i18n import set_language
+from ui.i18n import set_language, t
 
 
 class StockWidget(QWidget):
@@ -27,6 +27,15 @@ class StockWidget(QWidget):
         )
         self.search_edit.textChanged.connect(self.load_data)
         toolbar.addWidget(self.search_edit)
+
+        self.template_filter = QComboBox()
+        self.template_filter.setFixedHeight(38)
+        self.template_filter.setMinimumWidth(180)
+        self.template_filter.setStyleSheet(
+            "border:1px solid #d1d5db;border-radius:6px;padding:0 10px;font-size:13px;background:white;"
+        )
+        self.template_filter.currentIndexChanged.connect(lambda _: self.load_data())
+        toolbar.addWidget(self.template_filter)
         toolbar.addStretch()
 
         incoming_btn = QPushButton("+ Kirim qo'shish")
@@ -37,6 +46,10 @@ class StockWidget(QWidget):
         incoming_btn.clicked.connect(self._add_stock)
         toolbar.addWidget(incoming_btn)
         layout.addLayout(toolbar)
+
+        self.stats_lbl = QLabel("")
+        self.stats_lbl.setStyleSheet("color:#475569;font-size:13px;font-weight:bold;")
+        layout.addWidget(self.stats_lbl)
 
         self.table = QTableWidget()
         self.table.setColumnCount(3)
@@ -58,10 +71,18 @@ class StockWidget(QWidget):
         )
         self.table.verticalHeader().setDefaultSectionSize(56)
         layout.addWidget(self.table)
+        self._load_template_filter()
 
     def load_data(self):
         query = self.search_edit.text() if hasattr(self, "search_edit") else ""
         products = db.search_products(query) if query else db.get_all_products()
+        template_filter = self.template_filter.currentData() if hasattr(self, "template_filter") else None
+        if template_filter == "none":
+            products = [product for product in products if not product["template_id"]]
+        elif template_filter:
+            products = [product for product in products if product["template_id"] == template_filter]
+        self._stats_counts = (len(products), sum(product["stock"] or 0 for product in products))
+        self._update_stats_label()
         self.table.setRowCount(0)
         for row, product in enumerate(products):
             self.table.insertRow(row)
@@ -89,6 +110,34 @@ class StockWidget(QWidget):
             self.table.setRowHeight(row, 56)
         set_language(self, self.property("app_language") or "uz")
 
+    def _load_template_filter(self):
+        current = self.template_filter.currentData() if hasattr(self, "template_filter") else None
+        self.template_filter.blockSignals(True)
+        self.template_filter.clear()
+        self.template_filter.addItem("Barcha templatelar", None)
+        self.template_filter.addItem("Template tanlanmagan", "none")
+        for template in db.get_templates():
+            self.template_filter.addItem(template["name"], template["id"])
+        if current is not None:
+            index = self.template_filter.findData(current)
+            if index >= 0:
+                self.template_filter.setCurrentIndex(index)
+        self.template_filter.blockSignals(False)
+        set_language(self.template_filter, self.property("app_language") or "uz")
+
+    def _update_stats_label(self):
+        type_count, total_stock = getattr(self, "_stats_counts", (0, 0))
+        language = self.property("app_language") or "uz"
+        unit = t("ta", language)
+        self.stats_lbl.setText(
+            f"{t('Turlar', language)}: {type_count} {unit}  |  "
+            f"{t('Jami qoldiq', language)}: {total_stock} {unit}"
+        )
+
+    def _language_changed(self, _language):
+        if hasattr(self, "stats_lbl"):
+            self._update_stats_label()
+
     def _add_stock(self):
         dlg = StockInDialog(self)
         if dlg.exec():
@@ -107,7 +156,8 @@ class StockWidget(QWidget):
 class StockInDialog(QDialog):
     def __init__(self, parent=None, product=None):
         super().__init__(parent)
-        self.setWindowTitle("Kirim qo'shish")
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        self.setWindowTitle(t("Kirim qo'shish", self.language))
         self.setFixedWidth(380)
         self.setStyleSheet("QDialog{background:white;} QLabel{color:#374151;font-size:13px;}")
         layout = QVBoxLayout(self)
@@ -148,11 +198,17 @@ class StockInDialog(QDialog):
         btn_row.addWidget(cancel_btn)
         btn_row.addWidget(save_btn)
         layout.addLayout(btn_row)
+        set_language(self, self.language)
 
     def _save(self):
         product_id = self.product_combo.currentData()
         quantity = self.qty_spin.value()
         note = self.note_edit.text()
         db.add_stock(product_id, quantity, note)
-        QMessageBox.information(self, "Muvaffaqiyat", f"{quantity} ta mahsulot qo'shildi!")
+        success_message = str(quantity) + " " + t("ta mahsulot qo'shildi!", self.language)
+        QMessageBox.information(
+            self,
+            t("Muvaffaqiyat", self.language),
+            success_message,
+        )
         self.accept()

@@ -4,8 +4,18 @@ from PyQt6.QtWidgets import (
     QMessageBox, QHeaderView, QComboBox, QTabWidget
 )
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QDoubleValidator
 import database as db
-from ui.i18n import set_language
+from ui.i18n import set_language, t
+
+
+def _translated_debt_error(message, language):
+    prefix = "To'lov joriy qarzdan oshib ketdi. Joriy qarz:"
+    if str(message).startswith(prefix):
+        amount = str(message)[len(prefix):].strip()
+        translated_prefix = t(prefix, language)
+        return f"{translated_prefix} {amount}"
+    return str(message)
 
 
 class PartyDialog(QDialog):
@@ -13,9 +23,12 @@ class PartyDialog(QDialog):
         super().__init__(parent)
         self.party = party
         self.label = label
-        self.setWindowTitle(f"{label} qo'shish" if not party else f"{label}ni tahrirlash")
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        title = f"{label} qo'shish" if not party else f"{label}ni tahrirlash"
+        self.setWindowTitle(t(title, self.language))
         self.setFixedWidth(380)
         self._build_ui()
+        set_language(self, self.language)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -54,7 +67,11 @@ class PartyDialog(QDialog):
 
     def _save(self):
         if not self.name_edit.text().strip():
-            QMessageBox.warning(self, "Xatolik", f"{self.label} nomini kiriting!")
+            QMessageBox.warning(
+                self,
+                t("Xatolik", self.language),
+                t(f"{self.label} nomini kiriting!", self.language),
+            )
             return
         self.accept()
 
@@ -71,17 +88,24 @@ class DebtDialog(QDialog):
     def __init__(self, parent=None, title="Qarz", currency_code="UZS"):
         super().__init__(parent)
         self.currency_code = currency_code
-        self.setWindowTitle(title)
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        self.setWindowTitle(t(title, self.language))
         self.setFixedWidth(340)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
         form = QFormLayout()
-        self.amount_spin = QDoubleSpinBox()
-        self.amount_spin.setRange(0, 999999999999)
-        self.amount_spin.setDecimals(2)
-        self.amount_spin.setSuffix(f" {self.currency_code}")
-        self.amount_spin.setStyleSheet("border:1px solid #d1d5db;border-radius:6px;padding:7px 10px;background:white;")
-        form.addRow("Summa:", self.amount_spin)
+        amount_row = QHBoxLayout()
+        self.amount_edit = QLineEdit()
+        self.amount_edit.setPlaceholderText("0.00")
+        validator = QDoubleValidator(0, 999999999999, 2, self)
+        validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+        self.amount_edit.setValidator(validator)
+        self.amount_edit.setStyleSheet("border:1px solid #d1d5db;border-radius:6px;padding:7px 10px;background:white;")
+        self.currency_lbl = QLabel(self.currency_code)
+        self.currency_lbl.setStyleSheet("color:#1e293b;font-size:13px;font-weight:bold;")
+        amount_row.addWidget(self.amount_edit)
+        amount_row.addWidget(self.currency_lbl)
+        form.addRow("Summa:", amount_row)
         layout.addLayout(form)
 
         btns = QHBoxLayout()
@@ -94,12 +118,20 @@ class DebtDialog(QDialog):
         btns.addWidget(cancel_btn)
         btns.addWidget(save_btn)
         layout.addLayout(btns)
+        set_language(self, self.language)
 
     def _save(self):
-        if self.amount_spin.value() <= 0:
-            QMessageBox.warning(self, "Xatolik", "Summani kiriting!")
+        if self.amount() <= 0:
+            QMessageBox.warning(self, t("Xatolik", self.language), t("Summani kiriting!", self.language))
             return
         self.accept()
+
+    def amount(self):
+        text = self.amount_edit.text().strip().replace(" ", "").replace(",", ".")
+        try:
+            return float(text) if text else 0
+        except ValueError:
+            return 0
 
 
 class DebtHistoryDialog(QDialog):
@@ -107,9 +139,12 @@ class DebtHistoryDialog(QDialog):
         super().__init__(parent)
         self.party = party
         self.kind = kind
-        self.setWindowTitle(f"To'lov tarixi - {party['name']}")
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        history_title = t("To'lov tarixi", self.language)
+        self.setWindowTitle(f"{history_title} - {party['name']}")
         self.setMinimumSize(720, 420)
         self._build_ui()
+        set_language(self, self.language)
         self.load_data()
 
     def _build_ui(self):
@@ -118,7 +153,7 @@ class DebtHistoryDialog(QDialog):
         layout.setSpacing(10)
 
         header = QLabel(
-            f"{self.party['name']} | Joriy qarz: "
+            f"{self.party['name']} | {t('Joriy qarz', self.language)}: "
             f"{self.party['balance']:,.2f} {self.party['debt_currency'] or 'UZS'}"
         )
         header.setStyleSheet("font-size:14px;font-weight:bold;color:#1e293b;")
@@ -160,7 +195,7 @@ class DebtHistoryDialog(QDialog):
                 action = "Qarz olindi" if movement["type"] == "qarz" else "To'landi"
             else:
                 action = "Qarz berildi" if movement["type"] == "qarz" else "Qaytarildi"
-            self.table.setItem(row, 1, QTableWidgetItem(action))
+            self.table.setItem(row, 1, QTableWidgetItem(t(action, self.language)))
             amount_item = QTableWidgetItem(f"{movement['amount']:,.2f}")
             amount_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.table.setItem(row, 2, amount_item)
@@ -191,6 +226,13 @@ class SupplierDebtsWidget(QWidget):
         self.total_lbl = QLabel()
         self.total_lbl.setStyleSheet("font-size:14px;font-weight:bold;color:#1e293b;")
         toolbar.addWidget(self.total_lbl)
+        self.total_currency_combo = QComboBox()
+        self.total_currency_combo.setFixedHeight(34)
+        self.total_currency_combo.setMinimumWidth(90)
+        self.total_currency_combo.setStyleSheet("border:1px solid #d1d5db;border-radius:6px;padding:0 10px;background:white;")
+        self._load_total_currency_combo()
+        self.total_currency_combo.currentIndexChanged.connect(lambda _: self._update_toolbar())
+        toolbar.addWidget(self.total_currency_combo)
         toolbar.addStretch()
         self.add_btn = QPushButton()
         self.add_btn.setFixedHeight(36)
@@ -224,10 +266,21 @@ class SupplierDebtsWidget(QWidget):
         return table
 
     def load_data(self):
+        self._load_total_currency_combo()
         self._load_table("supplier", db.get_all_suppliers())
         self._load_table("debtor", db.get_all_debtors())
         self._update_toolbar()
         set_language(self, self.property("app_language") or "uz")
+
+    def _language_changed(self, _language):
+        self._update_toolbar()
+        for kind, table in self.tables.items():
+            total_header = "Jami olingan" if kind == "supplier" else "Jami berilgan"
+            headers = ["Nomi", "Telefon", "Valyuta", "Qarz", total_header, "Amallar"]
+            for column, header in enumerate(headers):
+                item = table.horizontalHeaderItem(column)
+                if item:
+                    item.setText(t(header, self.property("app_language") or "uz"))
 
     def _load_table(self, kind, rows):
         table = self.tables[kind]
@@ -288,15 +341,43 @@ class SupplierDebtsWidget(QWidget):
 
     def _update_toolbar(self):
         kind = self._current_kind()
+        language = self.property("app_language") or "uz"
         rows = db.get_all_suppliers() if kind == "supplier" else db.get_all_debtors()
-        totals = {}
-        for party in rows:
-            currency = party["debt_currency"] or "UZS"
-            totals[currency] = totals.get(currency, 0) + (party["balance"] or 0)
-        total_text = " | ".join(f"{amount:,.2f} {currency}" for currency, amount in totals.items()) or "0 UZS"
+        target_currency = self.total_currency_combo.currentData() if hasattr(self, "total_currency_combo") else "UZS"
+        target_currency = target_currency or "UZS"
+        total = self._converted_debt_total(rows, target_currency)
         title = "Umumiy olingan qarz" if kind == "supplier" else "Umumiy berilgan qarz"
-        self.total_lbl.setText(f"{title}: {total_text}")
-        self.add_btn.setText("+ Ta'minotchi" if kind == "supplier" else "+ Qarz oluvchi")
+        self.total_lbl.setText(f"{t(title, language)}: {total:,.2f} {target_currency}")
+        self.add_btn.setText(t("+ Ta'minotchi" if kind == "supplier" else "+ Qarz oluvchi", language))
+
+    def _load_total_currency_combo(self):
+        current = self.total_currency_combo.currentData() if hasattr(self, "total_currency_combo") else "UZS"
+        self.total_currency_combo.blockSignals(True)
+        self.total_currency_combo.clear()
+        available = {currency["code"] for currency in db.get_currencies()}
+        for code in ("UZS", "USD", "EUR"):
+            if code in available or code == "UZS":
+                self.total_currency_combo.addItem(code, code)
+        index = self.total_currency_combo.findData(current)
+        if index >= 0:
+            self.total_currency_combo.setCurrentIndex(index)
+        self.total_currency_combo.blockSignals(False)
+
+    def _currency_rate_map(self):
+        rates = {"UZS": 1}
+        for currency in db.get_currencies():
+            rates[currency["code"]] = currency["rate_to_uzs"] or 1
+        return rates
+
+    def _converted_debt_total(self, rows, target_currency):
+        rates = self._currency_rate_map()
+        target_rate = rates.get(target_currency, 1) or 1
+        total_uzs = 0
+        for party in rows:
+            source_currency = party["debt_currency"] or "UZS"
+            source_rate = rates.get(source_currency, 1) or 1
+            total_uzs += (party["balance"] or 0) * source_rate
+        return total_uzs / target_rate
 
     def _add_current_party(self):
         kind = self._current_kind()
@@ -333,16 +414,20 @@ class SupplierDebtsWidget(QWidget):
         currency = party["debt_currency"] or "UZS"
         dlg = DebtDialog(self, title, currency)
         if dlg.exec():
-            amount = dlg.amount_spin.value()
-            if kind == "supplier" and mode == "plus":
-                db.add_supplier_debt(party["id"], amount, f"{party['name']}dan qarz olindi")
-            elif kind == "supplier":
-                db.pay_supplier_debt(party["id"], amount, f"{party['name']}ga to'landi")
-            elif mode == "plus":
-                db.add_debtor_debt(party["id"], amount, f"{party['name']}ga qarz berildi")
-            else:
-                db.pay_debtor_debt(party["id"], amount, f"{party['name']}dan qaytarildi")
-            self.load_data()
+            amount = dlg.amount()
+            try:
+                if kind == "supplier" and mode == "plus":
+                    db.add_supplier_debt(party["id"], amount, f"{party['name']}dan qarz olindi")
+                elif kind == "supplier":
+                    db.pay_supplier_debt(party["id"], amount, f"{party['name']}ga to'landi")
+                elif mode == "plus":
+                    db.add_debtor_debt(party["id"], amount, f"{party['name']}ga qarz berildi")
+                else:
+                    db.pay_debtor_debt(party["id"], amount, f"{party['name']}dan qaytarildi")
+                self.load_data()
+            except db.AppError as exc:
+                language = self.property("app_language") or "uz"
+                QMessageBox.warning(self, t("Xatolik", language), _translated_debt_error(exc, language))
 
     def _show_history(self, row, kind):
         party = self._party_at_row(row, kind)
@@ -355,15 +440,22 @@ class SupplierDebtsWidget(QWidget):
         party = self._party_at_row(row, kind)
         if not party:
             return
+        language = self.property("app_language") or "uz"
         if kind == "supplier":
             title = "Ta'minotchini o'chirish"
-            text = f"'{party['name']}' o'chirilsinmi?\n\nMahsulotlar o'chmaydi, faqat 'Kimdan olingan' maydoni bo'shatiladi."
+            delete_question = t("o'chirilsinmi?", language)
+            supplier_hint = t("Mahsulotlar o'chmaydi, faqat 'Kimdan olingan' maydoni bo'shatiladi.", language)
+            text = (
+                f"'{party['name']}' {delete_question}\n\n"
+                f"{supplier_hint}"
+            )
         else:
             title = "Qarz oluvchini o'chirish"
-            text = f"'{party['name']}' va uning qarz tarixi o'chirilsinmi?"
+            debtor_question = t("va uning qarz tarixi o'chirilsinmi?", language)
+            text = f"'{party['name']}' {debtor_question}"
         reply = QMessageBox.question(
             self,
-            title,
+            t(title, language),
             text,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )

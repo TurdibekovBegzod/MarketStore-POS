@@ -6,9 +6,9 @@ from PyQt6.QtWidgets import (
     QMessageBox, QHeaderView, QComboBox, QDateEdit
 )
 from PyQt6.QtCore import Qt, QDate, QPointF
-from PyQt6.QtGui import QPainter, QPen, QColor, QFont
+from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QDoubleValidator
 import database as db
-from ui.i18n import set_language
+from ui.i18n import set_language, t
 
 
 class ExpenseChart(QWidget):
@@ -38,7 +38,7 @@ class ExpenseChart(QWidget):
         painter.drawLine(chart.bottomLeft(), chart.topLeft())
         if not self.points:
             painter.setPen(QColor("#94a3b8"))
-            painter.drawText(chart, Qt.AlignmentFlag.AlignCenter, "Ma'lumot yo'q")
+            painter.drawText(chart, Qt.AlignmentFlag.AlignCenter, t("Ma'lumot yo'q", self.property("app_language") or "uz"))
             return
         max_value = max(value for _, value in self.points) or 1
         count = max(len(self.points) - 1, 1)
@@ -66,9 +66,11 @@ class ExpenseDialog(QDialog):
     def __init__(self, parent=None, expense=None):
         super().__init__(parent)
         self.expense = expense
-        self.setWindowTitle("Harajat qo'shish" if not expense else "Harajatni tahrirlash")
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        self.setWindowTitle(t("Harajat qo'shish" if not expense else "Harajatni tahrirlash", self.language))
         self.setFixedWidth(420)
         self._build_ui()
+        set_language(self, self.language)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -82,10 +84,6 @@ class ExpenseDialog(QDialog):
             idx = self.category_combo.findData(self.expense["category_id"])
             if idx >= 0:
                 self.category_combo.setCurrentIndex(idx)
-        self.amount_spin = QDoubleSpinBox()
-        self.amount_spin.setRange(0, 999999999999)
-        self.amount_spin.setDecimals(2)
-        self.amount_spin.setValue(self.expense["amount"] if self.expense else 0)
         self.currency_combo = QComboBox()
         for currency in db.get_currencies():
             self.currency_combo.addItem(currency["code"], currency["code"])
@@ -93,17 +91,25 @@ class ExpenseDialog(QDialog):
             idx = self.currency_combo.findData(self.expense["currency_code"])
             if idx >= 0:
                 self.currency_combo.setCurrentIndex(idx)
-        self.currency_combo.currentIndexChanged.connect(self._update_suffix)
+        amount_row = QHBoxLayout()
+        self.currency_combo.setFixedWidth(92)
+        self.amount_edit = QLineEdit()
+        self.amount_edit.setPlaceholderText("0.00")
+        validator = QDoubleValidator(0, 999999999999, 2, self)
+        validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+        self.amount_edit.setValidator(validator)
+        if self.expense and self.expense["amount"]:
+            self.amount_edit.setText(self._format_amount(self.expense["amount"]))
+        amount_row.addWidget(self.currency_combo)
+        amount_row.addWidget(self.amount_edit)
         self.description_edit = QLineEdit(self.expense["description"] if self.expense and self.expense["description"] else "")
         self.description_edit.setPlaceholderText("Masalan: ofis ijara, yoqilg'i, reklama")
-        for widget in [self.category_combo, self.amount_spin, self.currency_combo, self.description_edit]:
+        for widget in [self.category_combo, self.amount_edit, self.currency_combo, self.description_edit]:
             widget.setStyleSheet("border:1px solid #d1d5db;border-radius:6px;padding:7px 10px;background:white;")
         form.addRow("Kategoriya:", self.category_combo)
-        form.addRow("Summa:", self.amount_spin)
-        form.addRow("Valyuta:", self.currency_combo)
+        form.addRow("Summa:", amount_row)
         form.addRow("Description:", self.description_edit)
         layout.addLayout(form)
-        self._update_suffix()
 
         btns = QHBoxLayout()
         cancel_btn = QPushButton("Bekor")
@@ -116,29 +122,37 @@ class ExpenseDialog(QDialog):
         btns.addWidget(save_btn)
         layout.addLayout(btns)
 
-    def _update_suffix(self):
-        self.amount_spin.setSuffix(f" {self.currency_combo.currentData() or 'UZS'}")
-
     def _save(self):
-        if self.amount_spin.value() <= 0:
-            QMessageBox.warning(self, "Xatolik", "Summani kiriting!")
+        if self.amount() <= 0:
+            QMessageBox.warning(self, t("Xatolik", self.language), t("Summani kiriting!", self.language))
             return
         self.accept()
 
     def get_data(self):
         return {
             "category_id": self.category_combo.currentData(),
-            "amount": self.amount_spin.value(),
+            "amount": self.amount(),
             "currency_code": self.currency_combo.currentData() or "UZS",
             "description": self.description_edit.text().strip() or None,
         }
+
+    def amount(self):
+        text = self.amount_edit.text().strip().replace(" ", "").replace(",", ".")
+        try:
+            return float(text) if text else 0
+        except ValueError:
+            return 0
+
+    def _format_amount(self, value):
+        return f"{float(value):.2f}".rstrip("0").rstrip(".")
 
 
 class CategoryDialog(QDialog):
     def __init__(self, parent=None, category=None):
         super().__init__(parent)
         self.category = category
-        self.setWindowTitle("Kategoriya qo'shish" if not category else "Kategoriya tahrirlash")
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        self.setWindowTitle(t("Kategoriya qo'shish" if not category else "Kategoriya tahrirlash", self.language))
         self.setFixedWidth(320)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
@@ -155,10 +169,11 @@ class CategoryDialog(QDialog):
         btns.addWidget(cancel_btn)
         btns.addWidget(save_btn)
         layout.addLayout(btns)
+        set_language(self, self.language)
 
     def _save(self):
         if not self.name_edit.text().strip():
-            QMessageBox.warning(self, "Xatolik", "Kategoriya nomini kiriting!")
+            QMessageBox.warning(self, t("Xatolik", self.language), t("Kategoriya nomini kiriting!", self.language))
             return
         self.accept()
 
@@ -166,9 +181,11 @@ class CategoryDialog(QDialog):
 class CategoryManagerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Harajat kategoriyalari")
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        self.setWindowTitle(t("Harajat kategoriyalari", self.language))
         self.setMinimumSize(520, 420)
         self._build_ui()
+        set_language(self, self.language)
         self.load_data()
 
     def _build_ui(self):
@@ -209,6 +226,8 @@ class CategoryManagerDialog(QDialog):
         del_btn = QPushButton("🗑 O'chir")
         edit_btn.setFixedSize(92, 30)
         del_btn.setFixedSize(96, 30)
+        edit_btn.setText(t("Tahrir", self.language))
+        del_btn.setText(t("O'chir", self.language))
         edit_btn.clicked.connect(lambda _, r=row: self._edit_category(r))
         del_btn.clicked.connect(lambda _, r=row: self._delete_category(r))
         layout.addWidget(edit_btn)
@@ -226,7 +245,7 @@ class CategoryManagerDialog(QDialog):
                 db.add_expense_category(dlg.name_edit.text().strip())
                 self.load_data()
             except db.AppError as exc:
-                QMessageBox.warning(self, "Saqlanmadi", str(exc))
+                QMessageBox.warning(self, t("Saqlanmadi", self.language), t(str(exc), self.language))
 
     def _edit_category(self, row):
         category = self._category_at_row(row)
@@ -238,15 +257,17 @@ class CategoryManagerDialog(QDialog):
                 db.update_expense_category(category["id"], dlg.name_edit.text().strip())
                 self.load_data()
             except db.AppError as exc:
-                QMessageBox.warning(self, "Saqlanmadi", str(exc))
+                QMessageBox.warning(self, t("Saqlanmadi", self.language), t(str(exc), self.language))
 
     def _delete_category(self, row):
         category = self._category_at_row(row)
         if not category:
             return
+        question = t("o'chirilsinmi?", self.language)
+        hint = t("Harajatlar o'chmaydi, kategoriyasi bo'shatiladi.", self.language)
         reply = QMessageBox.question(
-            self, "Kategoriya o'chirish",
-            f"'{category['name']}' o'chirilsinmi?\nHarajatlar o'chmaydi, kategoriyasi bo'shatiladi.",
+            self, t("Kategoriya o'chirish", self.language),
+            f"'{category['name']}' {question}\n{hint}",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:
@@ -257,9 +278,11 @@ class CategoryManagerDialog(QDialog):
 class ExpenseReportDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Harajatlar hisoboti")
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        self.setWindowTitle(t("Harajatlar hisoboti", self.language))
         self.setMinimumSize(820, 560)
         self._build_ui()
+        set_language(self, self.language)
         self.load_data()
 
     def _build_ui(self):
@@ -309,15 +332,16 @@ class ExpenseReportDialog(QDialog):
             totals[currency] = totals.get(currency, 0) + (row["amount"] or 0)
             by_label[row["label"]] = by_label.get(row["label"], 0) + (row["amount"] or 0)
         total_text = " | ".join(f"{amount:,.2f} {currency}" for currency, amount in totals.items()) or "0 UZS"
-        self.total_lbl.setText(f"Jami harajat: {total_text}")
-        self.chart.set_points(self._filled_points(by_label, start_date, end_date), "Davr bo'yicha harajatlar")
+        self.total_lbl.setText(f"{t('Jami harajat', self.language)}: {total_text}")
+        self.chart.setProperty("app_language", self.language)
+        self.chart.set_points(self._filled_points(by_label, start_date, end_date), t("Davr bo'yicha harajatlar", self.language))
         self._load_category_report(start_date, end_date, category_id)
 
     def _load_category_filter(self):
         current = self.category_filter.currentData() if hasattr(self, "category_filter") else None
         self.category_filter.blockSignals(True)
         self.category_filter.clear()
-        self.category_filter.addItem("Barcha kategoriyalar", None)
+        self.category_filter.addItem(t("Barcha kategoriyalar", self.language), None)
         for category in db.get_expense_categories():
             self.category_filter.addItem(category["name"], category["id"])
         if current:
@@ -376,6 +400,13 @@ class ExpensesWidget(QWidget):
         self.total_lbl = QLabel()
         self.total_lbl.setStyleSheet("font-size:14px;font-weight:bold;color:#1e293b;")
         toolbar.addWidget(self.total_lbl)
+        self.total_currency_combo = QComboBox()
+        self.total_currency_combo.setFixedHeight(34)
+        self.total_currency_combo.setMinimumWidth(90)
+        self.total_currency_combo.setStyleSheet("border:1px solid #d1d5db;border-radius:6px;padding:0 10px;background:white;")
+        self._load_total_currency_combo()
+        self.total_currency_combo.currentIndexChanged.connect(lambda _: self._update_total_label())
+        toolbar.addWidget(self.total_currency_combo)
         toolbar.addStretch()
         category_btn = QPushButton("Kategoriyalar")
         category_btn.clicked.connect(self._manage_categories)
@@ -405,12 +436,9 @@ class ExpensesWidget(QWidget):
 
     def load_data(self):
         expenses = db.get_expenses()
-        totals = {}
-        for expense in expenses:
-            currency = expense["currency_code"] or "UZS"
-            totals[currency] = totals.get(currency, 0) + (expense["amount"] or 0)
-        total_text = " | ".join(f"{amount:,.2f} {currency}" for currency, amount in totals.items()) or "0 UZS"
-        self.total_lbl.setText(f"Jami harajat: {total_text}")
+        self._expenses = expenses
+        self._currency_rates = self._currency_rate_map()
+        self._update_total_label()
         self.table.setRowCount(0)
         for row, expense in enumerate(expenses):
             self.table.insertRow(row)
@@ -427,6 +455,40 @@ class ExpensesWidget(QWidget):
             self.table.setRowHeight(row, 54)
         set_language(self, self.property("app_language") or "uz")
 
+    def _update_total_label(self):
+        target_currency = self.total_currency_combo.currentData() if hasattr(self, "total_currency_combo") else "UZS"
+        target_currency = target_currency or "UZS"
+        total = self._converted_expense_total(target_currency)
+        language = self.property("app_language") or "uz"
+        self.total_lbl.setText(f"{t('Jami harajat', language)}: {total:,.2f} {target_currency}")
+
+    def _language_changed(self, _language):
+        self._update_total_label()
+
+    def _load_total_currency_combo(self):
+        self.total_currency_combo.clear()
+        available = {currency["code"] for currency in db.get_currencies()}
+        for code in ("UZS", "USD", "EUR"):
+            if code in available or code == "UZS":
+                self.total_currency_combo.addItem(code, code)
+
+    def _currency_rate_map(self):
+        rates = {"UZS": 1}
+        for currency in db.get_currencies():
+            rates[currency["code"]] = currency["rate_to_uzs"] or 1
+        return rates
+
+    def _converted_expense_total(self, target_currency):
+        expenses = getattr(self, "_expenses", [])
+        rates = getattr(self, "_currency_rates", None) or self._currency_rate_map()
+        target_rate = rates.get(target_currency, 1) or 1
+        total_uzs = 0
+        for expense in expenses:
+            source_currency = expense["currency_code"] or "UZS"
+            source_rate = rates.get(source_currency, 1) or 1
+            total_uzs += (expense["amount"] or 0) * source_rate
+        return total_uzs / target_rate
+
     def _actions_widget(self, row):
         widget = QWidget()
         layout = QHBoxLayout(widget)
@@ -436,6 +498,9 @@ class ExpensesWidget(QWidget):
         delete_btn = QPushButton("🗑 O'chir")
         edit_btn.setFixedSize(92, 30)
         delete_btn.setFixedSize(96, 30)
+        language = self.property("app_language") or "uz"
+        edit_btn.setText(t("Tahrir", language))
+        delete_btn.setText(t("O'chir", language))
         edit_btn.setStyleSheet(self._state_button("#fff7ed", "#9a3412", "#fdba74", "#fb923c"))
         delete_btn.setStyleSheet(self._state_button("#fef2f2", "#991b1b", "#fca5a5", "#dc2626"))
         edit_btn.clicked.connect(lambda _, r=row: self._edit_expense(r))
@@ -474,8 +539,9 @@ class ExpensesWidget(QWidget):
         expense = self._expense_at_row(row)
         if not expense:
             return
+        language = self.property("app_language") or "uz"
         reply = QMessageBox.question(
-            self, "Harajatni o'chirish", "Bu harajat o'chirilsinmi?",
+            self, t("Harajatni o'chirish", language), t("Bu harajat o'chirilsinmi?", language),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
         )
         if reply == QMessageBox.StandardButton.Yes:

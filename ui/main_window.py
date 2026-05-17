@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (
     QAbstractButton, QTableWidget, QHeaderView, QSpinBox, QDoubleSpinBox,
     QTextEdit, QDateEdit, QTabWidget, QScrollArea
 )
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import QTimer, Qt
+from PyQt6.QtGui import QPixmap
 from datetime import datetime
 import database as db
 
@@ -19,6 +20,9 @@ from ui.supplier_debts_widget import SupplierDebtsWidget
 from ui.expenses_widget import ExpensesWidget
 from ui.checking_widget import CheckingWidget
 from ui.i18n import set_language
+
+
+DESKTOP_ICON_PATH = "images/desktop.png"
 
 
 THEMES = {
@@ -194,9 +198,18 @@ class MainWindow(QMainWindow):
 
         self.logo_frame = QFrame()
         self.logo_frame.setFixedHeight(70)
-        logo_lay = QVBoxLayout(self.logo_frame)
+        logo_lay = QHBoxLayout(self.logo_frame)
+        logo_lay.setContentsMargins(14, 0, 14, 0)
+        logo_lay.setSpacing(10)
+        self.logo_icon_lbl = QLabel()
+        self.logo_icon_lbl.setFixedSize(42, 42)
+        self.logo_icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.logo_icon_lbl.setScaledContents(False)
+        self._set_logo_icon()
+        logo_lay.addWidget(self.logo_icon_lbl)
         self.logo_lbl = QLabel(self.settings["app_name"])
-        logo_lay.addWidget(self.logo_lbl)
+        self.logo_lbl.setWordWrap(True)
+        logo_lay.addWidget(self.logo_lbl, 1)
         sb_layout.addWidget(self.logo_frame)
 
         self.nav_buttons = {}
@@ -346,6 +359,18 @@ class MainWindow(QMainWindow):
         now = datetime.now().strftime("%d.%m.%Y  %H:%M:%S")
         self.clock_lbl.setText(now)
 
+    def _set_logo_icon(self):
+        pixmap = QPixmap(DESKTOP_ICON_PATH)
+        if not pixmap.isNull():
+            self.logo_icon_lbl.setPixmap(
+                pixmap.scaled(
+                    34,
+                    34,
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                )
+            )
+
     def _open_settings(self):
         dlg = SettingsDialog(self, self.user["role"], self.settings)
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -383,7 +408,10 @@ class MainWindow(QMainWindow):
             }}
         """)
         self.logo_frame.setStyleSheet(f"background:{theme['sidebar_alt']};border-bottom:1px solid {theme['border']};")
-        self.logo_lbl.setStyleSheet(f"color:{theme['nav_text']};font-size:18px;font-weight:bold;padding-left:16px;")
+        self.logo_icon_lbl.setStyleSheet(
+            f"background:{theme['topbar']};border:1px solid {theme['border']};border-radius:8px;"
+        )
+        self.logo_lbl.setStyleSheet(f"color:{theme['nav_text']};font-size:17px;font-weight:bold;")
         self.user_frame.setStyleSheet(f"background:{theme['sidebar_alt']};border-top:1px solid {theme['border']};")
         self.uname.setStyleSheet(f"color:{theme['nav_text']};font-size:13px;")
         self.urole.setStyleSheet(f"color:{theme['muted']};font-size:11px;")

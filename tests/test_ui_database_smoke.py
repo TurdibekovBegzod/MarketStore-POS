@@ -3,6 +3,7 @@ import tempfile
 import unittest
 
 import database as db
+from ui.i18n import set_language
 
 
 class UiDatabaseSmokeTest(unittest.TestCase):
@@ -82,6 +83,17 @@ class UiDatabaseSmokeTest(unittest.TestCase):
             load = getattr(widget, "load_data", None)
             if callable(load):
                 load()
+        products = widgets[1]
+        set_language(products, "en")
+        self.assertIn("Available:", products.stats_lbl.text())
+        self.assertEqual(products.search_edit.placeholderText(), "Search...")
+        set_language(products, "ru")
+        self.assertIn("В наличии:", products.stats_lbl.text())
+        self.assertEqual(products.search_edit.placeholderText(), "Поиск...")
+        debts = widgets[6]
+        set_language(debts, "en")
+        self.assertIn("Total", debts.total_lbl.text())
+        self.assertIn(debts.add_btn.text(), {"+ Supplier", "+ Debtor"})
         self.assertEqual(len(widgets), 10)
         app.processEvents()
 

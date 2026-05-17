@@ -5,11 +5,14 @@ from PyQt6.QtWidgets import (
     QMessageBox, QHeaderView, QFrame, QCheckBox, QScrollArea, QTabWidget
 )
 from PyQt6.QtCore import Qt, QRectF, QSizeF, QMarginsF
-from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QPageSize, QPageLayout
+from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QPageSize, QPageLayout, QDoubleValidator, QIcon
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
-import sqlite3
 import database as db
 from ui.i18n import set_language, t
+from ui.sales_widget import ProductInfoDialog
+
+
+COPY_ICON_PATH = "images/copy.png"
 
 
 def _row_value(row, key, default=None):
@@ -53,9 +56,11 @@ class TemplateDialog(QDialog):
     def __init__(self, parent=None, template=None):
         super().__init__(parent)
         self.template = template
-        self.setWindowTitle("Template qo'shish" if not template else "Template tahrirlash")
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        self.setWindowTitle(t("Template qo'shish" if not template else "Template tahrirlash", self.language))
         self.setFixedWidth(520)
         self._build_ui()
+        set_language(self, self.language)
 
     def _build_ui(self):
         self.setStyleSheet("""
@@ -124,10 +129,10 @@ class TemplateDialog(QDialog):
 
     def _save(self):
         if not self.name_edit.text().strip():
-            QMessageBox.warning(self, "Xatolik", "Template nomini kiriting!")
+            QMessageBox.warning(self, t("Xatolik", self.language), t("Template nomini kiriting!", self.language))
             return
         if not self.get_fields():
-            QMessageBox.warning(self, "Xatolik", "Kamida bitta hususiyat kiriting!")
+            QMessageBox.warning(self, t("Xatolik", self.language), t("Kamida bitta hususiyat kiriting!", self.language))
             return
         self.accept()
 
@@ -148,9 +153,11 @@ class TemplateDialog(QDialog):
 class TemplateManagerDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Product templatelar")
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        self.setWindowTitle(t("Product templatelar", self.language))
         self.setFixedSize(560, 420)
         self._build_ui()
+        set_language(self, self.language)
         self.load_data()
 
     def _build_ui(self):
@@ -206,8 +213,8 @@ class TemplateManagerDialog(QDialog):
             try:
                 db.add_template(dlg.name_edit.text().strip(), dlg.get_fields())
                 self.load_data()
-            except sqlite3.IntegrityError:
-                QMessageBox.warning(self, "Saqlanmadi", "Bu template nomi allaqachon mavjud.")
+            except db.AppError as exc:
+                QMessageBox.warning(self, t("Saqlanmadi", self.language), t(str(exc), self.language))
 
     def _edit_template(self):
         template = self._selected_template()
@@ -218,8 +225,8 @@ class TemplateManagerDialog(QDialog):
             try:
                 db.update_template(template["id"], dlg.name_edit.text().strip(), dlg.get_fields())
                 self.load_data()
-            except sqlite3.IntegrityError:
-                QMessageBox.warning(self, "Saqlanmadi", "Bu template nomi allaqachon mavjud.")
+            except db.AppError as exc:
+                QMessageBox.warning(self, t("Saqlanmadi", self.language), t(str(exc), self.language))
 
     def _delete_template(self):
         template = self._selected_template()
@@ -383,9 +390,11 @@ class ReturnSaleItemDialog(QDialog):
         super().__init__(parent)
         self.archive_row = archive_row
         self.available = archive_row["quantity"] - archive_row["returned_quantity"]
-        self.setWindowTitle("Mahsulotni qaytarish")
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        self.setWindowTitle(t("Mahsulotni qaytarish", self.language))
         self.setFixedWidth(380)
         self._build_ui()
+        set_language(self, self.language)
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
@@ -394,7 +403,8 @@ class ReturnSaleItemDialog(QDialog):
 
         info = QLabel(
             f"{self.archive_row['product_name']}\n"
-            f"Sotuv #{self.archive_row['sale_id']} | Qaytarish mumkin: {self.available}"
+            f"{t('Sotuv', self.language)} #{self.archive_row['sale_id']} | "
+            f"{t('Qaytarish mumkin', self.language)}: {self.available}"
         )
         info.setStyleSheet("color:#1e293b;font-size:13px;font-weight:bold;")
         layout.addWidget(info)
@@ -434,13 +444,14 @@ class ProcessSaleDialog(QDialog):
     def __init__(self, parent=None, product=None):
         super().__init__(parent)
         self.product = product
-        self.setWindowTitle("Sotuvni yakunlash")
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        self.setWindowTitle(t("Sotuvni yakunlash", self.language))
         self.setFixedWidth(360)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(12)
 
-        info = QLabel(f"{product['name']} | Qoldiq: {product['stock']} {product['unit']}")
+        info = QLabel(f"{product['name']} | {t('Qoldiq', self.language)}: {product['stock']} {product['unit']}")
         info.setStyleSheet("color:#1e293b;font-size:13px;font-weight:bold;")
         layout.addWidget(info)
 
@@ -462,6 +473,7 @@ class ProcessSaleDialog(QDialog):
         btns.addWidget(cancel_btn)
         btns.addWidget(save_btn)
         layout.addLayout(btns)
+        set_language(self, self.language)
 
     def quantity(self):
         return self.qty_spin.value()
@@ -683,25 +695,26 @@ class ProductArchiveDialog(QDialog):
         return item.data(Qt.ItemDataRole.UserRole) if item else None
 
     def _return_item(self, row):
+        language = self.property("app_language") or "uz"
         archive_row = self._archive_at_row(row)
         if not archive_row:
             return
         available = archive_row["quantity"] - archive_row["returned_quantity"]
         if available <= 0:
-            QMessageBox.information(self, "Qaytarib bo'lingan", "Bu sotuvdagi mahsulot to'liq qaytarilgan.")
+            QMessageBox.information(self, t("Qaytarib bo'lingan", language), t("Bu sotuvdagi mahsulot to'liq qaytarilgan.", language))
             return
         dlg = ReturnSaleItemDialog(self, archive_row)
         if dlg.exec():
             data = dlg.get_data()
             try:
                 db.return_sale_item(archive_row["sale_item_id"], data["quantity"], data["note"])
-                QMessageBox.information(self, "Qaytarildi", "Mahsulot omborga qaytarildi.")
+                QMessageBox.information(self, t("Qaytarildi", language), t("Mahsulot omborga qaytarildi.", language))
                 self.load_data()
                 parent = self.parent()
                 if parent and hasattr(parent, "load_data"):
                     parent.load_data()
             except db.AppError as exc:
-                QMessageBox.warning(self, "Qaytarilmadi", str(exc))
+                QMessageBox.warning(self, t("Qaytarilmadi", language), str(exc))
 
 
 class BarcodeLabelWidget(QWidget):
@@ -847,18 +860,22 @@ class BarcodePrintDialog(QDialog):
 
 
 class ProductDialog(QDialog):
-    def __init__(self, parent=None, product=None):
+    def __init__(self, parent=None, product=None, duplicate=False):
         super().__init__(parent)
         self.product = product
+        self.duplicate = duplicate
+        self.language = (parent.property("app_language") if parent else None) or "uz"
         self.attr_edits = {}
         self.attr_fields = {}
         self.currencies = [dict(c) for c in db.get_currencies()]
         self.product_attributes = db.get_product_attributes(product["id"]) if product else {}
-        self.setWindowTitle("Mahsulot qo'shish" if not product else "Mahsulotni tahrirlash")
+        title = "Mahsulot qo'shish" if (not product or duplicate) else "Mahsulotni tahrirlash"
+        self.setWindowTitle(t(title, self.language))
         self.setFixedWidth(460)
         self.setMaximumHeight(720)
         self.resize(460, 680)
         self._build_ui()
+        set_language(self, self.language)
 
     def _build_ui(self):
         self.setStyleSheet("""
@@ -888,7 +905,8 @@ class ProductDialog(QDialog):
         form = QFormLayout()
         form.setSpacing(10)
 
-        self.barcode_edit = QLineEdit(self.product["barcode"] if self.product and self.product["barcode"] else "")
+        barcode_value = "" if self.duplicate else (self.product["barcode"] if self.product and self.product["barcode"] else "")
+        self.barcode_edit = QLineEdit(barcode_value)
         self.barcode_edit.setPlaceholderText("Ixtiyoriy")
         form.addRow("Shtrix-kod:", self.barcode_edit)
 
@@ -897,7 +915,7 @@ class ProductDialog(QDialog):
         form.addRow("Nomi *:", self.name_edit)
 
         self.supplier_combo = QComboBox()
-        self.supplier_combo.addItem("— Kimdan olingan —", None)
+        self.supplier_combo.addItem("Kimdan olingan tanlanmagan", None)
         for supplier in db.get_all_suppliers():
             self.supplier_combo.addItem(supplier["name"], supplier["id"])
         supplier_id = _row_value(self.product, "supplier_id")
@@ -908,7 +926,7 @@ class ProductDialog(QDialog):
         form.addRow("Kimdan olingan:", self.supplier_combo)
 
         self.template_combo = QComboBox()
-        self.template_combo.addItem("— Template tanlanmagan —", None)
+        self.template_combo.addItem("Template tanlanmagan", None)
         for template in db.get_templates():
             self.template_combo.addItem(template["name"], template["id"])
         template_id = _row_value(self.product, "template_id")
@@ -919,18 +937,23 @@ class ProductDialog(QDialog):
         self.template_combo.currentIndexChanged.connect(self._load_template_fields)
         form.addRow("Template:", self.template_combo)
 
-        self.price_spin = QDoubleSpinBox()
-        self.price_spin.setRange(0, 999999999)
-        self.price_spin.setDecimals(2)
-        self.price_spin.setValue(
+        money_validator = QDoubleValidator(0, 999999999, 4, self)
+        money_validator.setNotation(QDoubleValidator.Notation.StandardNotation)
+
+        self.price_spin = QLineEdit()
+        self.price_spin.setValidator(money_validator)
+        self.price_spin.setPlaceholderText("0.0000")
+        price_value = (
             self.product["price_original"] if self.product and self.product["price_original"] else
             (self.product["price"] if self.product else 0)
         )
+        if price_value:
+            self.price_spin.setText(self._format_money_input(price_value))
         self.price_currency_combo = self._currency_combo(
             self.product["price_currency"] if self.product and self.product["price_currency"] else "UZS"
         )
         self.price_currency_combo.currentIndexChanged.connect(self._update_price_labels)
-        self.price_spin.valueChanged.connect(self._update_price_labels)
+        self.price_spin.textChanged.connect(self._update_price_labels)
         price_row = QHBoxLayout()
         price_row.addWidget(self.price_spin)
         price_row.addWidget(self.price_currency_combo)
@@ -939,18 +962,20 @@ class ProductDialog(QDialog):
         self.price_uzs_lbl.setStyleSheet("color:#64748b;font-size:12px;")
         form.addRow("", self.price_uzs_lbl)
 
-        self.cost_spin = QDoubleSpinBox()
-        self.cost_spin.setRange(0, 999999999)
-        self.cost_spin.setDecimals(2)
-        self.cost_spin.setValue(
+        self.cost_spin = QLineEdit()
+        self.cost_spin.setValidator(money_validator)
+        self.cost_spin.setPlaceholderText("0.0000")
+        cost_value = (
             self.product["cost_original"] if self.product and self.product["cost_original"] else
             (self.product["cost"] if self.product else 0)
         )
+        if cost_value:
+            self.cost_spin.setText(self._format_money_input(cost_value))
         self.cost_currency_combo = self._currency_combo(
             self.product["cost_currency"] if self.product and self.product["cost_currency"] else "UZS"
         )
         self.cost_currency_combo.currentIndexChanged.connect(self._update_price_labels)
-        self.cost_spin.valueChanged.connect(self._update_price_labels)
+        self.cost_spin.textChanged.connect(self._update_price_labels)
         cost_row = QHBoxLayout()
         cost_row.addWidget(self.cost_spin)
         cost_row.addWidget(self.cost_currency_combo)
@@ -960,8 +985,8 @@ class ProductDialog(QDialog):
         form.addRow("", self.cost_uzs_lbl)
 
         self.stock_spin = QSpinBox()
-        self.stock_spin.setRange(0, 9999999)
-        self.stock_spin.setValue(self.product["stock"] if self.product else 0)
+        self.stock_spin.setRange(1, 9999999)
+        self.stock_spin.setValue(max(1, self.product["stock"] if self.product else 1))
         form.addRow("Qoldiq:", self.stock_spin)
 
         content_layout.addLayout(form)
@@ -976,6 +1001,11 @@ class ProductDialog(QDialog):
         self._update_price_labels()
 
         layout.addWidget(scroll, 1)
+
+        self.print_barcode_check = QCheckBox("Saqlagandan keyin barcode chiqarish")
+        self.print_barcode_check.setVisible(not self.product or self.duplicate)
+        self.print_barcode_check.setStyleSheet("margin:0 24px;color:#1e293b;font-size:13px;font-weight:600;")
+        layout.addWidget(self.print_barcode_check)
 
         btn_row = QHBoxLayout()
         btn_row.setContentsMargins(24, 12, 24, 20)
@@ -1000,24 +1030,45 @@ class ProductDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _save(self):
-        if not self.name_edit.text().strip():
-            QMessageBox.warning(self, "Xatolik", "Mahsulot nomini kiriting!")
+        barcode = self.barcode_edit.text().strip()
+        if not barcode:
+            QMessageBox.warning(self, t("Xatolik", self.language), t("Shtrix-kodni kiriting!", self.language))
             return
-        if self.price_spin.value() <= 0:
-            QMessageBox.warning(self, "Xatolik", "Sotish narxini kiriting!")
+        if barcode:
+            existing = db.get_product_by_barcode(barcode)
+            current_id = None if self.duplicate else (_row_value(self.product, "id") if self.product else None)
+            if existing and existing["id"] != current_id:
+                QMessageBox.warning(
+                    self,
+                    t("Saqlanmadi", self.language),
+                    t("Bu shtrix-kod allaqachon mavjud.", self.language),
+                )
+                return
+        if not self.name_edit.text().strip():
+            QMessageBox.warning(self, t("Xatolik", self.language), t("Mahsulot nomini kiriting!", self.language))
+            return
+        if self._money_value(self.price_spin) <= 0:
+            QMessageBox.warning(self, t("Xatolik", self.language), t("Sotish narxini kiriting!", self.language))
+            return
+        if self._money_value(self.cost_spin) <= 0:
+            QMessageBox.warning(self, t("Xatolik", self.language), t("Xarid narxini kiriting!", self.language))
             return
         for field_id, edit in self.attr_edits.items():
             field = self.attr_fields[field_id]
             if field["required"] and not edit.text().strip():
-                QMessageBox.warning(self, "Xatolik", f"{field['name']} hususiyatini kiriting!")
+                QMessageBox.warning(
+                    self,
+                    t("Xatolik", self.language),
+                    f"{field['name']} {t('hususiyatini kiriting!', self.language)}",
+                )
                 return
         self.accept()
 
     def get_data(self):
         price_currency = self._selected_currency(self.price_currency_combo)
         cost_currency = self._selected_currency(self.cost_currency_combo)
-        price_original = self.price_spin.value()
-        cost_original = self.cost_spin.value()
+        price_original = self._money_value(self.price_spin)
+        cost_original = self._money_value(self.cost_spin)
         price_rate = price_currency["rate_to_uzs"]
         cost_rate = cost_currency["rate_to_uzs"]
         return {
@@ -1050,15 +1101,30 @@ class ProductDialog(QDialog):
     def _selected_currency(self, combo):
         return combo.currentData() or {"code": "UZS", "rate_to_uzs": 1}
 
+    def _money_value(self, edit):
+        text = edit.text().strip().replace(" ", "").replace(",", ".")
+        try:
+            return float(text) if text else 0
+        except ValueError:
+            return 0
+
+    def _format_money_input(self, value):
+        return f"{float(value):.4f}".rstrip("0").rstrip(".")
+
     def _update_price_labels(self):
         price_currency = self._selected_currency(self.price_currency_combo)
         cost_currency = self._selected_currency(self.cost_currency_combo)
-        price_uzs = self.price_spin.value() * price_currency["rate_to_uzs"]
-        cost_uzs = self.cost_spin.value() * cost_currency["rate_to_uzs"]
-        self.price_spin.setSuffix(f" {price_currency['code']}")
-        self.cost_spin.setSuffix(f" {cost_currency['code']}")
-        self.price_uzs_lbl.setText(f"So'mda: {price_uzs:,.0f} so'm | kurs: {price_currency['rate_to_uzs']:,.2f}")
-        self.cost_uzs_lbl.setText(f"So'mda: {cost_uzs:,.0f} so'm | kurs: {cost_currency['rate_to_uzs']:,.2f}")
+        price_uzs = self._money_value(self.price_spin) * price_currency["rate_to_uzs"]
+        cost_uzs = self._money_value(self.cost_spin) * cost_currency["rate_to_uzs"]
+        uzs_label = t("So'mda", self.language)
+        money_unit = t("so'm", self.language)
+        rate_label = t("kurs:", self.language)
+        self.price_uzs_lbl.setText(
+            f"{uzs_label}: {price_uzs:,.0f} {money_unit} | {rate_label} {price_currency['rate_to_uzs']:,.2f}"
+        )
+        self.cost_uzs_lbl.setText(
+            f"{uzs_label}: {cost_uzs:,.0f} {money_unit} | {rate_label} {cost_currency['rate_to_uzs']:,.2f}"
+        )
 
     def get_attributes(self):
         return {field_id: edit.text().strip() for field_id, edit in self.attr_edits.items()}
@@ -1071,7 +1137,7 @@ class ProductDialog(QDialog):
         template_id = self.template_combo.currentData()
         fields = db.get_template_fields(template_id)
         if not fields:
-            self.attrs_form.addRow(QLabel("Template tanlansa, hususiyat maydonlari shu yerda chiqadi."))
+            self.attrs_form.addRow(QLabel(t("Template tanlansa, hususiyat maydonlari shu yerda chiqadi.", self.language)))
             return
         for field_row in fields:
             field = dict(field_row)
@@ -1097,7 +1163,7 @@ class ProductsWidget(QWidget):
         # Toolbar
         toolbar = QHBoxLayout()
         self.search_edit = QLineEdit()
-        self.search_edit.setPlaceholderText("🔍  Qidirish...")
+        self.search_edit.setPlaceholderText("Qidirish...")
         self.search_edit.setFixedHeight(38)
         self.search_edit.setStyleSheet("""
             QLineEdit { border: 1px solid #d1d5db; border-radius: 6px;
@@ -1189,20 +1255,23 @@ class ProductsWidget(QWidget):
 
     def _create_products_table(self):
         table = QTableWidget()
-        table.setColumnCount(8)
+        table.setColumnCount(9)
         table.setHorizontalHeaderLabels([
-            "Nomi", "Template", "Shtrix-kod", "Narx", "Xarid", "Qoldiq", "Zaklad", "Amallar"
+            "Nomi", "Template", "Shtrix-kod", "Narx", "Xarid", "Qoldiq", "Zaklad", "Amallar", "Copy"
         ])
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
         table.horizontalHeader().setSectionResizeMode(7, QHeaderView.ResizeMode.Fixed)
+        table.horizontalHeader().setSectionResizeMode(8, QHeaderView.ResizeMode.Fixed)
         table.setColumnWidth(6, 130)
         table.setColumnWidth(7, 180)
+        table.setColumnWidth(8, 70)
         table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         table.setAlternatingRowColors(True)
         table.setStyleSheet(self._table_style())
         table.verticalHeader().setDefaultSectionSize(112)
+        table.doubleClicked.connect(lambda index, t=table: self._show_product_info_from_table(index, t))
         return table
 
     def _create_process_table(self):
@@ -1221,6 +1290,7 @@ class ProductsWidget(QWidget):
         table.setAlternatingRowColors(True)
         table.setStyleSheet(self._table_style())
         table.verticalHeader().setDefaultSectionSize(112)
+        table.doubleClicked.connect(lambda index, t=table: self._show_product_info_from_table(index, t))
         return table
 
     def _create_sold_table(self):
@@ -1242,6 +1312,7 @@ class ProductsWidget(QWidget):
         table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         table.setAlternatingRowColors(True)
         table.setStyleSheet(self._table_style())
+        table.doubleClicked.connect(self._show_product_info_from_sold)
         return table
 
     def _table_style(self):
@@ -1299,14 +1370,27 @@ class ProductsWidget(QWidget):
 
         available = [p for p in products if self._available_quantity(p) > 0]
         processing = [p for p in products if (_row_value(p, "process_quantity", 0) or 0) > 0]
-        self.stats_lbl.setText(
-            f"Bor: {len(available)} ta  |  Jarayonda: {len(processing)} ta  |  Sotilganlar: {sold_count} ta"
-        )
+        self._stats_counts = (len(available), len(processing), sold_count)
+        self._update_stats_label()
 
         self._fill_products_table(self.table, available, "available")
         self._fill_products_table(self.process_table, processing, "process")
         self._fill_sold_table(sold_rows)
         set_language(self, self.property("app_language") or "uz")
+
+    def _update_stats_label(self):
+        available_count, processing_count, sold_count = getattr(self, "_stats_counts", (0, 0, 0))
+        language = self.property("app_language") or "uz"
+        unit = t("ta", language)
+        self.stats_lbl.setText(
+            f"{t('Bor', language)}: {available_count} {unit}  |  "
+            f"{t('Jarayonda', language)}: {processing_count} {unit}  |  "
+            f"{t('Sotilganlar', language)}: {sold_count} {unit}"
+        )
+
+    def _language_changed(self, _language):
+        if hasattr(self, "stats_lbl"):
+            self._update_stats_label()
 
     def _apply_product_filters(self, products):
         supplier_filter = self.supplier_filter.currentData() if hasattr(self, "supplier_filter") else None
@@ -1366,6 +1450,24 @@ class ProductsWidget(QWidget):
                 table.setItem(row, 7, QTableWidgetItem(_row_value(p, "process_customer_name", "") or ""))
                 table.setItem(row, 8, QTableWidgetItem(_row_value(p, "process_customer_phone", "") or ""))
                 action_column = 9
+            elif mode == "available":
+                copy_wrap = QWidget()
+                copy_layout = QHBoxLayout(copy_wrap)
+                copy_layout.setContentsMargins(0, 0, 0, 0)
+                duplicate_btn = QPushButton()
+                duplicate_btn.setIcon(QIcon(COPY_ICON_PATH))
+                duplicate_btn.setFixedSize(34, 28)
+                duplicate_btn.setIconSize(QSizeF(18, 18).toSize())
+                duplicate_btn.setToolTip(t("Nusxalash", self.property("app_language") or "uz"))
+                duplicate_btn.setStyleSheet("""
+                    QPushButton { background:#f8fafc;color:#334155;border:1px solid #cbd5e1;
+                                  border-radius:6px;font-size:14px;font-weight:bold; }
+                    QPushButton:hover { background:#e0f2fe;color:#0369a1;border-color:#7dd3fc; }
+                    QPushButton:pressed { background:#0f172a;color:white;padding-top:2px; }
+                """)
+                duplicate_btn.clicked.connect(lambda _, r=row, t=table: self._duplicate_product(r, t))
+                copy_layout.addWidget(duplicate_btn, alignment=Qt.AlignmentFlag.AlignCenter)
+                table.setCellWidget(row, 8, copy_wrap)
 
             actions_widget = QWidget()
             actions_widget.setStyleSheet("background: transparent;")
@@ -1483,22 +1585,23 @@ class ProductsWidget(QWidget):
         return labels.get(value, value or "")
 
     def _return_sold_item(self, row):
+        language = self.property("app_language") or "uz"
         archive_row = self._sold_at_row(row)
         if not archive_row:
             return
         available = archive_row["quantity"] - archive_row["returned_quantity"]
         if available <= 0:
-            QMessageBox.information(self, "Qaytarib bo'lingan", "Bu sotuvdagi mahsulot to'liq qaytarilgan.")
+            QMessageBox.information(self, t("Qaytarib bo'lingan", language), t("Bu sotuvdagi mahsulot to'liq qaytarilgan.", language))
             return
         dlg = ReturnSaleItemDialog(self, archive_row)
         if dlg.exec():
             data = dlg.get_data()
             try:
                 db.return_sale_item(archive_row["sale_item_id"], data["quantity"], data["note"])
-                QMessageBox.information(self, "Qaytarildi", "Mahsulot omborga qaytarildi.")
+                QMessageBox.information(self, t("Qaytarildi", language), t("Mahsulot omborga qaytarildi.", language))
                 self.load_data()
             except db.AppError as exc:
-                QMessageBox.warning(self, "Qaytarilmadi", str(exc))
+                QMessageBox.warning(self, t("Qaytarilmadi", language), str(exc))
 
     def _clear_sold_history(self):
         language = self.property("app_language") or "uz"
@@ -1528,33 +1631,80 @@ class ProductsWidget(QWidget):
         self.load_data()
 
     def _add_product(self):
+        language = self.property("app_language") or "uz"
         try:
             dlg = ProductDialog(self)
-        except sqlite3.Error as exc:
-            QMessageBox.warning(self, "Xatolik", f"Mahsulot oynasi ochilmadi:\n{exc}")
+        except db.AppError as exc:
+            QMessageBox.warning(self, t("Xatolik", language), f"{t('Mahsulot oynasi ochilmadi:', language)}\n{exc}")
             return
         if dlg.exec():
             try:
                 product_id = db.add_product(dlg.get_data())
                 db.save_product_attributes(product_id, dlg.get_attributes())
                 self.load_data()
-            except sqlite3.IntegrityError:
-                QMessageBox.warning(self, "Saqlanmadi", "Bu shtrix-kod allaqachon mavjud.")
-            except sqlite3.Error as exc:
-                QMessageBox.warning(self, "Saqlanmadi", f"Database xatosi:\n{exc}")
+                if dlg.print_barcode_check.isChecked():
+                    self._print_product_barcode_by_id(product_id)
+            except db.AppError as exc:
+                QMessageBox.warning(self, t("Saqlanmadi", language), t(str(exc), language))
+
+    def _duplicate_product(self, row, table=None):
+        language = self.property("app_language") or "uz"
+        item = self._product_item(row, table)
+        if not item:
+            return
+        product = item.data(Qt.ItemDataRole.UserRole)
+        if not product:
+            return
+        try:
+            dlg = ProductDialog(self, product, duplicate=True)
+        except db.AppError as exc:
+            QMessageBox.warning(self, t("Xatolik", language), f"{t('Mahsulot oynasi ochilmadi:', language)}\n{exc}")
+            return
+        if dlg.exec():
+            try:
+                product_id = db.add_product(dlg.get_data())
+                db.save_product_attributes(product_id, dlg.get_attributes())
+                self.load_data()
+                if dlg.print_barcode_check.isChecked():
+                    self._print_product_barcode_by_id(product_id)
+            except db.AppError as exc:
+                QMessageBox.warning(self, t("Saqlanmadi", language), t(str(exc), language))
 
     def _product_item(self, row, table=None):
         table = table or self.table
         return table.item(row, 0)
 
+    def _show_product_info_from_table(self, index, table):
+        item = self._product_item(index.row(), table)
+        product = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if product:
+            self._show_product_info(dict(product))
+
+    def _show_product_info_from_sold(self, index):
+        archive_row = self._sold_at_row(index.row())
+        if not archive_row:
+            return
+        product = db.get_product_by_id(archive_row["product_id"])
+        if product:
+            self._show_product_info(dict(product))
+
+    def _show_product_info(self, product):
+        dlg = ProductInfoDialog(self, product)
+        dlg.exec()
+
     def _move_to_process(self, row, table=None):
+        language = self.property("app_language") or "uz"
         item = self._product_item(row, table)
         if not item:
             return
         product = item.data(Qt.ItemDataRole.UserRole)
         available = self._available_quantity(product)
         if available <= 0:
-            QMessageBox.warning(self, "Qoldiq yetarli emas", "Jarayonga o'tkazish uchun bor qoldiq yo'q.")
+            QMessageBox.warning(
+                self,
+                t("Qoldiq yetarli emas", language),
+                t("Jarayonga o'tkazish uchun bor qoldiq yo'q.", language),
+            )
             return
         dlg = MoveToProcessDialog(self, product, available)
         if dlg.exec():
@@ -1568,16 +1718,18 @@ class ProductsWidget(QWidget):
                     data["customer_name"],
                     data["customer_phone"],
                 )
+                moved_text = t("jarayonga o'tkazildi.", language)
+                deposit_label = t("Zaklad", language)
                 QMessageBox.information(
                     self,
-                    "Jarayonga o'tkazildi",
-                    f"{data['quantity']} {product['unit']} jarayonga o'tkazildi.\n"
-                    f"Zaklad: {data['deposit_amount']:,.2f} {data['deposit_currency']}",
+                    t("Jarayonga o'tkazildi", language),
+                    f"{data['quantity']} {product['unit']} {moved_text}\n"
+                    f"{deposit_label}: {data['deposit_amount']:,.2f} {data['deposit_currency']}",
                 )
                 self.load_data()
                 self.tabs.setCurrentWidget(self.process_table)
             except db.AppError as exc:
-                QMessageBox.warning(self, "Jarayonga o'tkazilmadi", str(exc))
+                QMessageBox.warning(self, t("Jarayonga o'tkazilmadi", language), str(exc))
 
     def _move_to_available(self, row, table=None):
         item = self._product_item(row, table)
@@ -1630,13 +1782,18 @@ class ProductsWidget(QWidget):
                 QMessageBox.warning(self, t("Yangilanmadi", self.property("app_language") or "uz"), str(exc))
 
     def _complete_process_sale(self, row, table=None):
+        language = self.property("app_language") or "uz"
         item = self._product_item(row, table)
         if not item:
             return
         product = item.data(Qt.ItemDataRole.UserRole)
         process_quantity = _row_value(product, "process_quantity", 0) or 0
         if process_quantity <= 0:
-            QMessageBox.warning(self, "Jarayonda emas", "Bu mahsulot uchun jarayondagi miqdor yo'q.")
+            QMessageBox.warning(
+                self,
+                t("Jarayonda emas", language),
+                t("Bu mahsulot uchun jarayondagi miqdor yo'q.", language),
+            )
             return
         process_product = dict(product)
         process_product["stock"] = process_quantity
@@ -1663,31 +1820,34 @@ class ProductsWidget(QWidget):
                     paid_original=(product["price_original"] or product["price"]) * quantity,
                 )
                 db.reduce_product_process(product["id"], quantity)
-                QMessageBox.information(self, "Sotuv yakunlandi", f"Sotuv #{sale_id} saqlandi.")
+                QMessageBox.information(
+                    self,
+                    t("Sotuv yakunlandi", language),
+                    f"{t('Sotuv', language)} #{sale_id} {t('saqlandi.', language)}",
+                )
                 self.load_data()
                 self.tabs.setCurrentWidget(self.sold_table)
             except db.AppError as exc:
-                QMessageBox.warning(self, "Sotuv yakunlanmadi", str(exc))
+                QMessageBox.warning(self, t("Sotuv yakunlanmadi", language), str(exc))
 
     def _edit_product(self, row, table=None):
+        language = self.property("app_language") or "uz"
         item = self._product_item(row, table)
         if not item:
             return
         product = item.data(Qt.ItemDataRole.UserRole)
         try:
             dlg = ProductDialog(self, product)
-        except sqlite3.Error as exc:
-            QMessageBox.warning(self, "Xatolik", f"Mahsulot oynasi ochilmadi:\n{exc}")
+        except db.AppError as exc:
+            QMessageBox.warning(self, t("Xatolik", language), f"{t('Mahsulot oynasi ochilmadi:', language)}\n{exc}")
             return
         if dlg.exec():
             try:
                 db.update_product(product["id"], dlg.get_data())
                 db.save_product_attributes(product["id"], dlg.get_attributes())
                 self.load_data()
-            except sqlite3.IntegrityError:
-                QMessageBox.warning(self, "Saqlanmadi", "Bu shtrix-kod allaqachon mavjud.")
-            except sqlite3.Error as exc:
-                QMessageBox.warning(self, "Saqlanmadi", f"Database xatosi:\n{exc}")
+            except db.AppError as exc:
+                QMessageBox.warning(self, t("Saqlanmadi", language), t(str(exc), language))
 
     def _delete_product(self, row, table=None):
         item = self._product_item(row, table)
@@ -1711,6 +1871,14 @@ class ProductsWidget(QWidget):
         if not item:
             return
         product = item.data(Qt.ItemDataRole.UserRole)
+        self._print_product_barcode(product)
+
+    def _print_product_barcode_by_id(self, product_id):
+        product = db.get_product_by_id(product_id)
+        if product:
+            self._print_product_barcode(dict(product))
+
+    def _print_product_barcode(self, product):
         if not product.get("barcode"):
             QMessageBox.warning(self, "Barcode yo'q", "Avval mahsulotga shtrix-kod kiriting.")
             return

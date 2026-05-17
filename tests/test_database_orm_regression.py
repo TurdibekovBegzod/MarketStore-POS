@@ -32,8 +32,12 @@ class DatabaseOrmRegressionTest(unittest.TestCase):
 
         admin = db.authenticate("admin", "admin123")
         self.assertIsNotNone(admin)
+        before = datetime.now()
         db.log_login(admin)
-        self.assertEqual(db.get_login_logs(1)[0]["username"], "admin")
+        log = db.get_login_logs(1)[0]
+        self.assertEqual(log["username"], "admin")
+        logged_at = datetime.strptime(log["logged_at"], "%Y-%m-%d %H:%M:%S")
+        self.assertLess(abs((logged_at - before).total_seconds()), 120)
         db.clear_login_logs()
         self.assertEqual(db.get_login_logs(), [])
 
@@ -79,12 +83,41 @@ class DatabaseOrmRegressionTest(unittest.TestCase):
         })
         db.save_product_attributes(product_id, {fields[0]["id"]: "Apple"})
         self.assertEqual(db.get_product_attributes(product_id)[fields[0]["id"]], "Apple")
+        db.save_product_attributes(product_id, {fields[0]["id"]: "Lenovo"})
+        self.assertEqual(db.get_product_attributes(product_id)[fields[0]["id"]], "Lenovo")
+        db.save_product_attributes(product_id, {fields[0]["id"]: ""})
+        self.assertEqual(db.get_product_attributes(product_id), {})
+        db.save_product_attributes(product_id, {fields[0]["id"]: "Apple"})
+        self.assertEqual(db.get_product_attribute_details(product_id)[0]["name"], "Brend")
+        self.assertEqual(db.get_product_by_id(product_id)["name"], "Phone")
         product = db.get_product_by_barcode("P100")
         self.assertEqual(product["category_name"], "Elektronika")
         self.assertEqual(db.search_products("Pho")[0]["supplier_name"], "Supplier")
 
         db.add_stock(product_id, 5, "kirim")
         self.assertEqual(db.get_product_by_barcode("P100")["stock"], 15)
+        usd_product_id = db.add_product({
+            "barcode": "USD1",
+            "name": "USD Product",
+            "template_id": None,
+            "supplier_id": supplier_id,
+            "category_id": cat_id,
+            "price": 12000,
+            "cost": 6000,
+            "price_currency": "USD",
+            "price_exchange_rate": 12000,
+            "price_original": 1,
+            "cost_currency": "USD",
+            "cost_exchange_rate": 12000,
+            "cost_original": 0.5,
+            "stock": 1,
+            "unit": "dona",
+        })
+        db.save_currency("USD", "US Dollar", 13000)
+        usd_product = db.get_product_by_id(usd_product_id)
+        self.assertEqual(usd_product["price"], 13000)
+        self.assertEqual(usd_product["cost"], 6500)
+        self.assertEqual(usd_product["price_exchange_rate"], 13000)
         db.update_product(product_id, {
             "barcode": "P101",
             "name": "Phone 2",
@@ -97,6 +130,41 @@ class DatabaseOrmRegressionTest(unittest.TestCase):
             "unit": "dona",
         })
         self.assertEqual(db.get_product_by_barcode("P101")["name"], "Phone 2")
+        second_id = db.add_product({
+            "barcode": "P102",
+            "name": "Phone duplicate target",
+            "template_id": template_id,
+            "supplier_id": supplier_id,
+            "category_id": cat_id,
+            "price": 1100,
+            "cost": 700,
+            "stock": 1,
+            "unit": "dona",
+        })
+        with self.assertRaises(db.AppError):
+            db.add_product({
+                "barcode": "P102",
+                "name": "Duplicate barcode",
+                "template_id": template_id,
+                "supplier_id": supplier_id,
+                "category_id": cat_id,
+                "price": 1100,
+                "cost": 700,
+                "stock": 1,
+                "unit": "dona",
+            })
+        with self.assertRaises(db.AppError):
+            db.update_product(second_id, {
+                "barcode": "P101",
+                "name": "Duplicate edit",
+                "template_id": template_id,
+                "supplier_id": supplier_id,
+                "category_id": cat_id,
+                "price": 1100,
+                "cost": 700,
+                "stock": 1,
+                "unit": "dona",
+            })
         db.put_product_in_process(product_id, 2, 100, "UZS", "Ali", "901")
         self.assertEqual(db.get_product_by_barcode("P101")["process_quantity"], 2)
         db.update_product_process(product_id, 4, 200, "USD", "Vali", "902")
@@ -153,6 +221,7 @@ class DatabaseOrmRegressionTest(unittest.TestCase):
             "stock": 10,
             "unit": "dona",
         })
+        before_sale = datetime.now()
         sale_id = db.create_sale(
             customer_id,
             admin["id"],
@@ -164,10 +233,15 @@ class DatabaseOrmRegressionTest(unittest.TestCase):
             customer_name="Manual Customer",
             customer_phone="999",
         )
-        self.assertEqual(db.get_sales_today()[0]["id"], sale_id)
+        sale_row = db.get_sales_today()[0]
+        self.assertEqual(sale_row["id"], sale_id)
+        sale_created_at = datetime.strptime(sale_row["created_at"], "%Y-%m-%d %H:%M:%S")
+        self.assertLess(abs((sale_created_at - before_sale).total_seconds()), 120)
         self.assertEqual(db.get_sale_items(sale_id)[0]["product_name"], "Sale Product")
         archive = db.get_product_sales_archive("Manual")
         self.assertEqual(archive[0]["customer_phone"], "999")
+        archive_created_at = datetime.strptime(archive[0]["created_at"], "%Y-%m-%d %H:%M:%S")
+        self.assertLess(abs((archive_created_at - before_sale).total_seconds()), 120)
         self.assertEqual(db.get_sale_cost(sale_id), 1800)
 
         today = datetime.now().strftime("%Y-%m-%d")
@@ -190,6 +264,8 @@ class DatabaseOrmRegressionTest(unittest.TestCase):
         supplier_id = db.add_supplier("Supplier", "1", "note", "USD")
         db.update_supplier(supplier_id, "Supplier 2", "2", "note2", "EUR")
         db.add_supplier_debt(supplier_id, 100, "debt")
+        with self.assertRaises(db.AppError):
+            db.pay_supplier_debt(supplier_id, 150, "too much")
         db.pay_supplier_debt(supplier_id, 40, "pay")
         self.assertEqual(db.get_all_suppliers()[0]["balance"], 60)
         self.assertEqual(len(db.get_supplier_debt_movements(supplier_id)), 2)
@@ -197,6 +273,8 @@ class DatabaseOrmRegressionTest(unittest.TestCase):
         debtor_id = db.add_debtor("Debtor", "1", "note", "USD")
         db.update_debtor(debtor_id, "Debtor 2", "2", "note2", "EUR")
         db.add_debtor_debt(debtor_id, 80, "debt")
+        with self.assertRaises(db.AppError):
+            db.pay_debtor_debt(debtor_id, 100, "too much")
         db.pay_debtor_debt(debtor_id, 30, "pay")
         self.assertEqual(db.get_all_debtors()[0]["balance"], 50)
         self.assertEqual(len(db.get_debtor_debt_movements(debtor_id)), 2)

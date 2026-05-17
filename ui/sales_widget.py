@@ -199,6 +199,90 @@ class SaleCustomerDialog(QDialog):
         set_language(self, self.language)
 
 
+class ProductInfoDialog(QDialog):
+    def __init__(self, parent=None, product=None):
+        super().__init__(parent)
+        self.product = product or {}
+        self.language = (parent.property("app_language") if parent else None) or "uz"
+        self.setWindowTitle(t("Mahsulot ma'lumotlari", self.language))
+        self.setMinimumWidth(520)
+        self._build_ui()
+        set_language(self, self.language)
+
+    def _build_ui(self):
+        self.setStyleSheet("""
+            QDialog { background: white; }
+            QLabel { color: #374151; font-size: 13px; }
+            QTableWidget { background: white; border: 1px solid #e2e8f0; border-radius: 8px; font-size: 13px; }
+            QHeaderView::section { background: #f8fafc; border: none; border-bottom: 1px solid #e2e8f0;
+                                   padding: 7px; font-weight: bold; color: #64748b; }
+            QPushButton { background: #3b82f6; color: white; border: none; border-radius: 6px;
+                          padding: 8px 18px; font-weight: bold; }
+        """)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(22, 20, 22, 20)
+        layout.setSpacing(12)
+
+        title = QLabel(self.product.get("name") or "")
+        title.setStyleSheet("font-size:16px;font-weight:bold;color:#1e293b;")
+        title.setWordWrap(True)
+        layout.addWidget(title)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+        for label, value in self._info_rows():
+            value_lbl = QLabel(str(value or "-"))
+            value_lbl.setWordWrap(True)
+            form.addRow(t(label, self.language), value_lbl)
+        layout.addLayout(form)
+
+        attrs = db.get_product_attribute_details(self.product.get("id")) if self.product.get("id") else []
+        attrs_title = QLabel(t("Atributlar", self.language))
+        attrs_title.setStyleSheet("font-size:14px;font-weight:bold;color:#1e293b;margin-top:4px;")
+        layout.addWidget(attrs_title)
+
+        table = QTableWidget()
+        table.setColumnCount(2)
+        table.setHorizontalHeaderLabels([t("Nomi", self.language), t("Qiymat", self.language)])
+        table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        table.setRowCount(max(1, len(attrs)))
+        if attrs:
+            for row, attr in enumerate(attrs):
+                table.setItem(row, 0, QTableWidgetItem(attr["name"]))
+                table.setItem(row, 1, QTableWidgetItem(attr["value"] or ""))
+        else:
+            table.setItem(0, 0, QTableWidgetItem(t("Ma'lumot yo'q", self.language)))
+            table.setItem(0, 1, QTableWidgetItem(""))
+        table.setMinimumHeight(140)
+        layout.addWidget(table)
+
+        close_row = QHBoxLayout()
+        close_row.addStretch()
+        close_btn = QPushButton("Yopish")
+        close_btn.clicked.connect(self.accept)
+        close_row.addWidget(close_btn)
+        layout.addLayout(close_row)
+
+    def _info_rows(self):
+        product = self.product
+        money_unit = t("so'm", self.language)
+        price_currency = product.get("price_currency") or "UZS"
+        cost_currency = product.get("cost_currency") or "UZS"
+        price_original = product.get("price_original") or product.get("price") or 0
+        cost_original = product.get("cost_original") or product.get("cost") or 0
+        return [
+            ("Shtrix-kod:", product.get("barcode") or "-"),
+            ("Template:", product.get("template_name") or "-"),
+            ("Ta'minotchi:", product.get("supplier_name") or "-"),
+            ("Narx:", f"{product.get('price') or 0:,.0f} {money_unit} ({price_original:,.4f} {price_currency})"),
+            ("Xarid narxi:", f"{product.get('cost') or 0:,.0f} {money_unit} ({cost_original:,.4f} {cost_currency})"),
+            ("Qoldiq:", product.get("stock") or 0),
+            ("Jarayonda:", product.get("process_quantity") or 0),
+        ]
+
+
 class SalesWidget(QWidget):
     def __init__(self, user):
         super().__init__()
@@ -227,7 +311,7 @@ class SalesWidget(QWidget):
 
         self.products_table = QTableWidget()
         self.products_table.setColumnCount(5)
-        self.products_table.setHorizontalHeaderLabels(["Nomi", "Kategoriya", "Narx", "Qoldiq", ""])
+        self.products_table.setHorizontalHeaderLabels(["Nomi", "Shtrix-kod", "Narx", "Qoldiq", ""])
         self.products_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.products_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         self.products_table.setColumnWidth(4, 58)
@@ -236,7 +320,7 @@ class SalesWidget(QWidget):
         self.products_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.products_table.setAlternatingRowColors(True)
         self.products_table.setStyleSheet(self._table_style())
-        self.products_table.doubleClicked.connect(self._add_to_cart_from_table)
+        self.products_table.doubleClicked.connect(self._show_product_from_table)
         left.addWidget(self.products_table)
         layout.addLayout(left, 3)
 
@@ -258,6 +342,7 @@ class SalesWidget(QWidget):
         self.cart_table.verticalHeader().setDefaultSectionSize(46)
         self.cart_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.cart_table.setStyleSheet(self._table_style())
+        self.cart_table.doubleClicked.connect(self._show_product_from_cart)
         right.addWidget(self.cart_table)
 
         # Discount
@@ -286,12 +371,9 @@ class SalesWidget(QWidget):
         totals_layout.setSpacing(6)
 
         self.subtotal_lbl = QLabel("")
-        self.subtotal_lbl.setStyleSheet("color: #64748b; font-size: 13px;")
-        self.total_lbl = QLabel("")
-        self.total_lbl.setStyleSheet("color: #1e293b; font-size: 20px; font-weight: bold;")
+        self.subtotal_lbl.setStyleSheet("color: #1e293b; font-size: 20px; font-weight: bold;")
 
         totals_layout.addWidget(self.subtotal_lbl)
-        totals_layout.addWidget(self.total_lbl)
         right.addWidget(totals_frame)
 
         # Payment method
@@ -371,7 +453,7 @@ class SalesWidget(QWidget):
         for row, p in enumerate(products):
             self.products_table.insertRow(row)
             self.products_table.setItem(row, 0, QTableWidgetItem(p["name"]))
-            self.products_table.setItem(row, 1, QTableWidgetItem(p["category_name"] or ""))
+            self.products_table.setItem(row, 1, QTableWidgetItem(p["barcode"] or ""))
             price_item = QTableWidgetItem(f"{p['price']:,.0f} so'm")
             price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             self.products_table.setItem(row, 2, price_item)
@@ -435,6 +517,7 @@ class SalesWidget(QWidget):
         dlg = CurrencyDialog(self)
         dlg.exec()
         self._load_currencies()
+        self._load_products(self.search_edit.text())
 
     def _search_products(self, text):
         self._load_products(text)
@@ -453,6 +536,22 @@ class SalesWidget(QWidget):
 
     def _add_to_cart_from_table(self, index):
         self._add_to_cart(index.row())
+
+    def _show_product_from_table(self, index):
+        item = self.products_table.item(index.row(), 0)
+        product = item.data(Qt.ItemDataRole.UserRole) if item else None
+        if product:
+            self._show_product_info(product)
+
+    def _show_product_from_cart(self, index):
+        if 0 <= index.row() < len(self.cart):
+            product = db.get_product_by_id(self.cart[index.row()]["product_id"])
+            if product:
+                self._show_product_info(dict(product))
+
+    def _show_product_info(self, product):
+        dlg = ProductInfoDialog(self, product)
+        dlg.exec()
 
     def _add_to_cart(self, row):
         item = self.products_table.item(row, 0)
@@ -496,7 +595,9 @@ class SalesWidget(QWidget):
         self.cart_table.setRowCount(0)
         for row, item in enumerate(self.cart):
             self.cart_table.insertRow(row)
-            self.cart_table.setItem(row, 0, QTableWidgetItem(item["name"]))
+            name_item = QTableWidgetItem(item["name"])
+            name_item.setData(Qt.ItemDataRole.UserRole, item["product_id"])
+            self.cart_table.setItem(row, 0, name_item)
             self.cart_table.setItem(row, 1, QTableWidgetItem(f"{item['price']:,.0f}"))
 
             qty_spin = QSpinBox()
@@ -545,9 +646,7 @@ class SalesWidget(QWidget):
         total = max(0, subtotal - discount)
         language = self._language()
         money_unit = self._money_unit()
-        pay_label = t("To'lash:", language)
-        self.subtotal_lbl.setText(f"{t('Jami', language)}: {subtotal:,.0f} {money_unit}")
-        self.total_lbl.setText(f"{pay_label} {total:,.0f} {money_unit}")
+        self.subtotal_lbl.setText(f"{t('Jami', language)}: {total:,.0f} {money_unit}")
         currency = self._selected_currency()
         rate = currency["rate_to_uzs"] or 1
         currency_by_label = t("bo'yicha:", language)

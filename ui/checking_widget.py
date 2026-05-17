@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 import database as db
-from ui.i18n import set_language
+from ui.i18n import set_language, t
 
 
 class CheckingWidget(QWidget):
@@ -182,24 +182,30 @@ class CheckingWidget(QWidget):
             table.setRowHeight(row_index, 42)
 
     def _start_checking(self):
+        language = self.property("app_language") or "uz"
         try:
             db.start_inventory_check(self.user["id"] if self.user else None)
             self.load_data()
         except db.AppError as exc:
-            QMessageBox.warning(self, "Checking boshlanmadi", str(exc))
+            QMessageBox.warning(self, t("Checking boshlanmadi", language), str(exc))
 
     def _finish_checking(self):
         if not self.session:
             return
+        language = self.property("app_language") or "uz"
         counts = db.get_inventory_check_counts(self.session["id"])
         unchecked = counts["unchecked_count"] or 0
         unchecked_quantity = counts["unchecked_quantity"] or 0
-        message = "Checking jarayoni tugatilsinmi?"
+        message = t("Checking jarayoni tugatilsinmi?", language)
         if unchecked:
-            message += f"\n\nTekshiruvdan o'tmagan mahsulotlar: {unchecked} xil turdagi {unchecked_quantity} ta"
+            unchecked_label = t("Tekshiruvdan o'tmagan mahsulotlar", language)
+            message += (
+                f"\n\n{unchecked_label}: "
+                f"{unchecked} {t('xil turdagi', language)} {unchecked_quantity} {t('ta', language)}"
+            )
         reply = QMessageBox.question(
             self,
-            "Jarayonni tugatish",
+            t("Jarayonni tugatish", language),
             message,
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
@@ -209,18 +215,22 @@ class CheckingWidget(QWidget):
             result = db.finish_inventory_check(self.session["id"])
             QMessageBox.information(
                 self,
-                "Checking tugadi",
-                f"Jami: {result['total'] or 0} tur, {result['total_quantity'] or 0} ta\n"
-                f"Tekshirildi: {result['checked_count'] or 0} tur, {result['checked_quantity'] or 0} ta\n"
-                f"Tekshirilmagan: {result['unchecked_count'] or 0} xil turdagi {result['unchecked_quantity'] or 0} ta",
+                t("Checking tugadi", language),
+                f"{t('Jami', language)}: {result['total'] or 0} {t('tur', language)}, "
+                f"{result['total_quantity'] or 0} {t('ta', language)}\n"
+                f"{t('Tekshirildi', language)}: {result['checked_count'] or 0} {t('tur', language)}, "
+                f"{result['checked_quantity'] or 0} {t('ta', language)}\n"
+                f"{t('Tekshirilmagan', language)}: {result['unchecked_count'] or 0} "
+                f"{t('xil turdagi', language)} {result['unchecked_quantity'] or 0} {t('ta', language)}",
             )
             self.load_data()
         except db.AppError as exc:
-            QMessageBox.warning(self, "Tugallanmadi", str(exc))
+            QMessageBox.warning(self, t("Tugallanmadi", language), str(exc))
 
     def _scan_barcode(self):
+        language = self.property("app_language") or "uz"
         if not self.session:
-            QMessageBox.warning(self, "Checking yo'q", "Avval tekshirishni boshlang.")
+            QMessageBox.warning(self, t("Checking yo'q", language), t("Avval tekshirishni boshlang.", language))
             return
         barcode = self.barcode_edit.text().strip()
         try:
@@ -236,7 +246,7 @@ class CheckingWidget(QWidget):
             else:
                 self.status_lbl.setText(f"Sanaldi: {item['product_name']} | {checked}/{expected} | Qoldi: {remaining}")
         except db.AppError as exc:
-            QMessageBox.warning(self, "Tekshirilmadi", str(exc))
+            QMessageBox.warning(self, t("Tekshirilmadi", language), str(exc))
             self.barcode_edit.selectAll()
             self.barcode_edit.setFocus()
 

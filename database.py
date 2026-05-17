@@ -1,7 +1,7 @@
 import hashlib
 import secrets
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sqlalchemy import (
     Column,
@@ -139,6 +139,23 @@ def _rows_from_models(items):
 
 def _now():
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _utc_now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _utc_to_local(value):
+    if not value:
+        return value
+    if isinstance(value, datetime):
+        source = value
+    else:
+        try:
+            source = datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return value
+    return source.replace(tzinfo=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _date_expr(column):
@@ -541,6 +558,12 @@ def get_product_by_barcode(barcode):
         return _product_row(*row) if row else None
 
 
+def get_product_by_id(product_id):
+    with session_scope() as session:
+        row = session.execute(_product_select().where(Product.id == product_id)).first()
+        return _product_row(*row) if row else None
+
+
 def _normalize_product_money(data):
     normalized = dict(data)
     normalized.setdefault("price_currency", "UZS")
@@ -557,20 +580,26 @@ def _normalize_product_money(data):
 def add_product(data: dict):
     data = _normalize_product_money(data)
     fields = {column.name for column in Product.__table__.columns}
-    with session_scope() as session:
-        product = Product(**{k: v for k, v in data.items() if k in fields and k != "id"})
-        session.add(product)
-        session.flush()
-        return product.id
+    try:
+        with session_scope() as session:
+            product = Product(**{k: v for k, v in data.items() if k in fields and k != "id"})
+            session.add(product)
+            session.flush()
+            return product.id
+    except IntegrityError as exc:
+        raise AppError("Bu shtrix-kod allaqachon mavjud.") from exc
 
 
 def update_product(product_id, data: dict):
     data = _normalize_product_money(data)
-    with session_scope() as session:
-        product = session.get(Product, product_id)
-        for key, value in data.items():
-            if hasattr(product, key) and key != "id":
-                setattr(product, key, value)
+    try:
+        with session_scope() as session:
+            product = session.get(Product, product_id)
+            for key, value in data.items():
+                if hasattr(product, key) and key != "id":
+                    setattr(product, key, value)
+    except IntegrityError as exc:
+        raise AppError("Bu shtrix-kod allaqachon mavjud.") from exc
 
 
 def delete_product(product_id):
@@ -712,42 +741,48 @@ def get_template_fields(template_id):
 
 
 def add_template(name, fields):
-    with session_scope() as session:
-        template = ProductTemplate(name=name)
-        session.add(template)
-        session.flush()
-        for order, field in enumerate(fields):
-            session.add(ProductTemplateField(
-                template_id=template.id,
-                name=field["name"],
-                field_type=field.get("field_type", "text"),
-                required=int(field.get("required", False)),
-                sort_order=order,
-            ))
-        return template.id
+    try:
+        with session_scope() as session:
+            template = ProductTemplate(name=name)
+            session.add(template)
+            session.flush()
+            for order, field in enumerate(fields):
+                session.add(ProductTemplateField(
+                    template_id=template.id,
+                    name=field["name"],
+                    field_type=field.get("field_type", "text"),
+                    required=int(field.get("required", False)),
+                    sort_order=order,
+                ))
+            return template.id
+    except IntegrityError as exc:
+        raise AppError("Bu template nomi allaqachon mavjud.") from exc
 
 
 def update_template(template_id, name, fields):
-    with session_scope() as session:
-        template = session.get(ProductTemplate, template_id)
-        if template:
-            template.name = name
-        existing = session.scalars(select(ProductTemplateField).where(ProductTemplateField.template_id == template_id)).all()
-        existing_by_name = {row.name.lower(): row for row in existing}
-        kept_ids = []
-        for order, field in enumerate(fields):
-            row = existing_by_name.get(field["name"].lower())
-            if row is None:
-                row = ProductTemplateField(template_id=template_id, name=field["name"])
-                session.add(row)
-                session.flush()
-            row.field_type = field.get("field_type", "text")
-            row.required = int(field.get("required", False))
-            row.sort_order = order
-            kept_ids.append(row.id)
-        for row in existing:
-            if row.id not in kept_ids:
-                session.delete(row)
+    try:
+        with session_scope() as session:
+            template = session.get(ProductTemplate, template_id)
+            if template:
+                template.name = name
+            existing = session.scalars(select(ProductTemplateField).where(ProductTemplateField.template_id == template_id)).all()
+            existing_by_name = {row.name.lower(): row for row in existing}
+            kept_ids = []
+            for order, field in enumerate(fields):
+                row = existing_by_name.get(field["name"].lower())
+                if row is None:
+                    row = ProductTemplateField(template_id=template_id, name=field["name"])
+                    session.add(row)
+                    session.flush()
+                row.field_type = field.get("field_type", "text")
+                row.required = int(field.get("required", False))
+                row.sort_order = order
+                kept_ids.append(row.id)
+            for row in existing:
+                if row.id not in kept_ids:
+                    session.delete(row)
+    except IntegrityError as exc:
+        raise AppError("Bu template nomi allaqachon mavjud.") from exc
 
 
 def delete_template(template_id):
@@ -771,14 +806,40 @@ def get_product_attributes(product_id):
         return {field_id: value for field_id, value in rows}
 
 
+def get_product_attribute_details(product_id):
+    with session_scope() as session:
+        rows = session.execute(
+            select(ProductTemplateField.name, ProductAttribute.value)
+            .join(ProductAttribute, ProductAttribute.field_id == ProductTemplateField.id)
+            .where(ProductAttribute.product_id == product_id)
+            .order_by(ProductTemplateField.sort_order, ProductTemplateField.id)
+        ).all()
+        return [Row({"name": name, "value": value}) for name, value in rows]
+
+
 def save_product_attributes(product_id, attributes):
     with session_scope() as session:
-        for row in session.scalars(select(ProductAttribute).where(ProductAttribute.product_id == product_id)):
-            session.delete(row)
+        existing = {
+            row.field_id: row
+            for row in session.scalars(select(ProductAttribute).where(ProductAttribute.product_id == product_id))
+        }
+        keep_ids = set()
         for field_id, value in attributes.items():
             if value is None or str(value).strip() == "":
+                row = existing.get(field_id)
+                if row:
+                    session.delete(row)
                 continue
-            session.add(ProductAttribute(product_id=product_id, field_id=field_id, value=str(value).strip()))
+            row = existing.get(field_id)
+            if row:
+                row.value = str(value).strip()
+            else:
+                row = ProductAttribute(product_id=product_id, field_id=field_id, value=str(value).strip())
+                session.add(row)
+            keep_ids.add(field_id)
+        for field_id, row in existing.items():
+            if field_id not in keep_ids and field_id not in attributes:
+                session.delete(row)
 
 
 def get_currencies():
@@ -805,6 +866,12 @@ def save_currency(code, name, rate_to_uzs):
         row.is_base = 1 if code == "UZS" else 0
         row.updated_at = _now()
         session.add(row)
+        for product in session.scalars(select(Product).where(Product.price_currency == code)):
+            product.price_exchange_rate = rate_to_uzs
+            product.price = (product.price_original or 0) * rate_to_uzs
+        for product in session.scalars(select(Product).where(Product.cost_currency == code)):
+            product.cost_exchange_rate = rate_to_uzs
+            product.cost = (product.cost_original or 0) * rate_to_uzs
 
 
 def delete_currency(code):
@@ -976,6 +1043,7 @@ def create_sale(customer_id, cashier_id, items, total, discount, paid, payment_m
             paid_original=paid_original,
             change_original=change_original,
             payment_method=payment_method,
+            created_at=_utc_now(),
         )
         session.add(sale)
         session.flush()
@@ -1051,7 +1119,7 @@ def get_product_sales_archive(query=""):
                 payment_method=sale.payment_method,
                 currency_code=sale.currency_code,
                 exchange_rate=sale.exchange_rate,
-                created_at=sale.created_at,
+                created_at=_utc_to_local(sale.created_at),
                 cashier_name=cashier_name,
                 customer_name=sale.customer_name or customer_name,
                 customer_phone=sale.customer_phone or customer_phone,
@@ -1135,7 +1203,12 @@ def get_sales_by_date(date_str):
             .where(_date_expr(Sale.created_at) == date_str)
             .order_by(Sale.created_at.desc())
         ).all()
-        return [_row_from_model(sale, cashier_name=username, customer_name=sale.customer_name or customer_name) for sale, username, customer_name in rows]
+        result = []
+        for sale, username, customer_name in rows:
+            row = _row_from_model(sale, cashier_name=username, customer_name=sale.customer_name or customer_name)
+            row["created_at"] = _utc_to_local(row["created_at"])
+            result.append(row)
+        return result
 
 
 def get_cashier_report(date_str):
@@ -1322,7 +1395,10 @@ def pay_supplier_debt(supplier_id, amount, note=""):
         raise AppError("To'lov summasi 0 dan katta bo'lishi kerak.")
     with session_scope() as session:
         row = session.get(Supplier, supplier_id)
-        row.balance = max((row.balance or 0) - amount, 0)
+        current_balance = row.balance or 0
+        if amount > current_balance:
+            raise AppError(f"To'lov joriy qarzdan oshib ketdi. Joriy qarz: {current_balance:,.2f}.")
+        row.balance = current_balance - amount
         session.add(SupplierDebtMovement(supplier_id=supplier_id, type="tolov", amount=amount, note=note))
 
 
@@ -1384,7 +1460,10 @@ def pay_debtor_debt(debtor_id, amount, note=""):
         raise AppError("To'lov summasi 0 dan katta bo'lishi kerak.")
     with session_scope() as session:
         row = session.get(Debtor, debtor_id)
-        row.balance = max((row.balance or 0) - amount, 0)
+        current_balance = row.balance or 0
+        if amount > current_balance:
+            raise AppError(f"To'lov joriy qarzdan oshib ketdi. Joriy qarz: {current_balance:,.2f}.")
+        row.balance = current_balance - amount
         session.add(DebtorDebtMovement(debtor_id=debtor_id, type="tolov", amount=amount, note=note))
 
 
@@ -1513,12 +1592,17 @@ def authenticate(username, password):
 
 def log_login(user):
     with session_scope() as session:
-        session.add(LoginLog(user_id=user["id"], username=user["username"], role=user["role"]))
+        session.add(LoginLog(user_id=user["id"], username=user["username"], role=user["role"], logged_at=_utc_now()))
 
 
 def get_login_logs(limit=500):
     with session_scope() as session:
-        return _rows_from_models(session.scalars(select(LoginLog).order_by(LoginLog.logged_at.desc(), LoginLog.id.desc()).limit(limit)).all())
+        rows = _rows_from_models(
+            session.scalars(select(LoginLog).order_by(LoginLog.logged_at.desc(), LoginLog.id.desc()).limit(limit)).all()
+        )
+        for row in rows:
+            row["logged_at"] = _utc_to_local(row["logged_at"])
+        return rows
 
 
 def clear_login_logs():
