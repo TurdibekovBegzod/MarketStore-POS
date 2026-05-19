@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QDate, QPointF
 from PyQt6.QtGui import QPainter, QPen, QColor, QFont, QDoubleValidator
 import database as db
+from ui.async_loader import AsyncDataLoader, make_progress_bar
 from ui.i18n import set_language, t
 
 
@@ -388,14 +389,19 @@ class ExpenseReportDialog(QDialog):
 
 
 class ExpensesWidget(QWidget):
-    def __init__(self):
+    def __init__(self, user=None):
         super().__init__()
+        self.user = user
+        self._async_loader = None
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
+        self.progress_bar = make_progress_bar()
+        layout.addWidget(self.progress_bar)
+        self._async_loader = AsyncDataLoader(self, self.progress_bar)
         toolbar = QHBoxLayout()
         self.total_lbl = QLabel()
         self.total_lbl.setStyleSheet("font-size:14px;font-weight:bold;color:#1e293b;")
@@ -435,9 +441,18 @@ class ExpensesWidget(QWidget):
         layout.addWidget(self.table)
 
     def load_data(self):
-        expenses = db.get_expenses()
+        if self.isVisible():
+            self._async_loader.start(
+                lambda: (db.get_expenses(), db.get_currencies()),
+                self._apply_loaded_data,
+            )
+            return
+        self._apply_loaded_data((db.get_expenses(), db.get_currencies()))
+
+    def _apply_loaded_data(self, data):
+        expenses, currencies = data
         self._expenses = expenses
-        self._currency_rates = self._currency_rate_map()
+        self._currency_rates = self._currency_rate_map(currencies)
         self._update_total_label()
         self.table.setRowCount(0)
         for row, expense in enumerate(expenses):
@@ -472,9 +487,9 @@ class ExpensesWidget(QWidget):
             if code in available or code == "UZS":
                 self.total_currency_combo.addItem(code, code)
 
-    def _currency_rate_map(self):
+    def _currency_rate_map(self, currencies=None):
         rates = {"UZS": 1}
-        for currency in db.get_currencies():
+        for currency in currencies if currencies is not None else db.get_currencies():
             rates[currency["code"]] = currency["rate_to_uzs"] or 1
         return rates
 
@@ -522,7 +537,13 @@ class ExpensesWidget(QWidget):
         dlg = ExpenseDialog(self)
         if dlg.exec():
             data = dlg.get_data()
-            db.add_expense(data["category_id"], data["amount"], data["currency_code"], data["description"])
+            db.add_expense(
+                data["category_id"],
+                data["amount"],
+                data["currency_code"],
+                data["description"],
+                self.user["id"] if self.user else None,
+            )
             self.load_data()
 
     def _edit_expense(self, row):
@@ -532,7 +553,14 @@ class ExpensesWidget(QWidget):
         dlg = ExpenseDialog(self, expense)
         if dlg.exec():
             data = dlg.get_data()
-            db.update_expense(expense["id"], data["category_id"], data["amount"], data["currency_code"], data["description"])
+            db.update_expense(
+                expense["id"],
+                data["category_id"],
+                data["amount"],
+                data["currency_code"],
+                data["description"],
+                self.user["id"] if self.user else None,
+            )
             self.load_data()
 
     def _delete_expense(self, row):

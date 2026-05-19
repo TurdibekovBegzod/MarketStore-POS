@@ -3,20 +3,30 @@ from PyQt6.QtWidgets import (
     QPushButton, QTableWidget, QTableWidgetItem, QDialog,
     QFormLayout, QSpinBox, QMessageBox, QHeaderView, QComboBox
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 import database as db
+from ui.async_loader import AsyncDataLoader, make_progress_bar
 from ui.i18n import set_language, t
 
 
 class StockWidget(QWidget):
     def __init__(self):
         super().__init__()
+        self._async_loader = None
+        self._search_timer = None
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
+        self.progress_bar = make_progress_bar()
+        layout.addWidget(self.progress_bar)
+        self._async_loader = AsyncDataLoader(self, self.progress_bar)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self.load_data)
 
         toolbar = QHBoxLayout()
         self.search_edit = QLineEdit()
@@ -25,7 +35,7 @@ class StockWidget(QWidget):
         self.search_edit.setStyleSheet(
             "border:1px solid #d1d5db;border-radius:6px;padding:0 12px;font-size:13px;background:white;"
         )
-        self.search_edit.textChanged.connect(self.load_data)
+        self.search_edit.textChanged.connect(self._queue_search)
         toolbar.addWidget(self.search_edit)
 
         self.template_filter = QComboBox()
@@ -75,7 +85,17 @@ class StockWidget(QWidget):
 
     def load_data(self):
         query = self.search_edit.text() if hasattr(self, "search_edit") else ""
-        products = db.search_products(query) if query else db.get_all_products()
+        if self.isVisible():
+            self._async_loader.start(
+                lambda: (db.search_products(query) if query else db.get_all_products(), db.get_templates()),
+                self._apply_loaded_data,
+            )
+            return
+        self._apply_loaded_data((db.search_products(query) if query else db.get_all_products(), db.get_templates()))
+
+    def _apply_loaded_data(self, data):
+        products, templates = data
+        self._load_template_filter(templates)
         template_filter = self.template_filter.currentData() if hasattr(self, "template_filter") else None
         if template_filter == "none":
             products = [product for product in products if not product["template_id"]]
@@ -110,13 +130,16 @@ class StockWidget(QWidget):
             self.table.setRowHeight(row, 56)
         set_language(self, self.property("app_language") or "uz")
 
-    def _load_template_filter(self):
+    def _queue_search(self, *_args):
+        self._search_timer.start()
+
+    def _load_template_filter(self, templates=None):
         current = self.template_filter.currentData() if hasattr(self, "template_filter") else None
         self.template_filter.blockSignals(True)
         self.template_filter.clear()
         self.template_filter.addItem("Barcha templatelar", None)
         self.template_filter.addItem("Template tanlanmagan", "none")
-        for template in db.get_templates():
+        for template in templates if templates is not None else db.get_templates():
             self.template_filter.addItem(template["name"], template["id"])
         if current is not None:
             index = self.template_filter.findData(current)

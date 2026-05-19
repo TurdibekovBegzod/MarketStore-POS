@@ -4,10 +4,14 @@ from PyQt6.QtWidgets import (
     QFormLayout, QComboBox, QSpinBox, QDoubleSpinBox,
     QMessageBox, QHeaderView, QFrame, QCheckBox, QScrollArea, QTabWidget
 )
-from PyQt6.QtCore import Qt, QRectF, QSizeF, QMarginsF
-from PyQt6.QtGui import QColor, QPainter, QPen, QFont, QPageSize, QPageLayout, QDoubleValidator, QIcon
+from PyQt6.QtCore import Qt, QRectF, QSizeF, QMarginsF, QRegularExpression, QTimer
+from PyQt6.QtGui import (
+    QColor, QPainter, QPen, QFont, QPageSize, QPageLayout,
+    QDoubleValidator, QIcon, QRegularExpressionValidator
+)
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 import database as db
+from ui.async_loader import AsyncDataLoader, make_progress_bar
 from ui.i18n import set_language, t
 from ui.sales_widget import ProductInfoDialog
 
@@ -498,29 +502,35 @@ class MoveToProcessDialog(QDialog):
         layout.setContentsMargins(24, 20, 24, 20)
         layout.setSpacing(12)
 
-        info = QLabel(f"{self.product['name']} | Bor qoldiq: {self.available}")
-        info.setStyleSheet("color:#1e293b;font-size:13px;font-weight:bold;")
-        layout.addWidget(info)
+        self.info_lbl = QLabel()
+        self.info_lbl.setStyleSheet("color:#1e293b;font-size:13px;font-weight:bold;")
+        layout.addWidget(self.info_lbl)
 
         form = QFormLayout()
         self.qty_spin = QSpinBox()
         self.qty_spin.setRange(1, max(1, self.available))
         self.qty_spin.setValue(int(self.initial.get("quantity") or 1))
-        self.deposit_spin = QDoubleSpinBox()
-        self.deposit_spin.setRange(0.01, 999999999999)
-        self.deposit_spin.setDecimals(2)
-        self.deposit_spin.setValue(float(self.initial.get("deposit_amount") or 0.01))
+        self.qty_spin.setVisible(not self.edit_mode)
+        self.deposit_edit = QLineEdit()
+        self.deposit_edit.setPlaceholderText("0.00")
+        self.deposit_edit.setValidator(QRegularExpressionValidator(QRegularExpression(r"^\d*([.,]\d{0,2})?$"), self))
+        deposit_amount = float(self.initial.get("deposit_amount") or 0)
+        if deposit_amount > 0:
+            self.deposit_edit.setText(self._format_amount(deposit_amount))
         self.currency_combo = QComboBox()
         for currency in self.currencies:
             self.currency_combo.addItem(currency["code"], currency["code"])
         idx = self.currency_combo.findText(self.initial.get("deposit_currency") or "UZS")
         if idx >= 0:
             self.currency_combo.setCurrentIndex(idx)
-        for widget in [self.qty_spin, self.deposit_spin, self.currency_combo]:
+        for widget in [self.qty_spin, self.deposit_edit, self.currency_combo]:
             widget.setStyleSheet("border:1px solid #d1d5db;border-radius:6px;padding:7px 10px;background:white;")
-        form.addRow("Miqdor:", self.qty_spin)
-        form.addRow("Zaklad:", self.deposit_spin)
-        form.addRow("Valyuta:", self.currency_combo)
+        deposit_row = QHBoxLayout()
+        deposit_row.addWidget(self.deposit_edit)
+        deposit_row.addWidget(self.currency_combo)
+        if not self.edit_mode:
+            form.addRow("Miqdor:", self.qty_spin)
+        form.addRow("Zaklad:", deposit_row)
         layout.addLayout(form)
 
         self.customer_check = QCheckBox("Mijoz nomi va telefonini kiritish")
@@ -557,6 +567,7 @@ class MoveToProcessDialog(QDialog):
     def _apply_language(self):
         title = "Jarayonni tahrirlash" if self.edit_mode else "Jarayonga o'tkazish"
         self.setWindowTitle(t(title, self.language))
+        self.info_lbl.setText(f"{self.product['name']} | {t('Bor qoldiq', self.language)}: {self.available}")
         set_language(self, self.language)
 
     def _toggle_customer_fields(self, enabled):
@@ -572,17 +583,32 @@ class MoveToProcessDialog(QDialog):
             customer_phone = self.customer_phone_edit.text().strip() or None
         return {
             "quantity": self.qty_spin.value(),
-            "deposit_amount": self.deposit_spin.value(),
+            "deposit_amount": self._deposit_value(),
             "deposit_currency": self.currency_combo.currentData() or "UZS",
             "customer_name": customer_name,
             "customer_phone": customer_phone,
         }
 
     def _accept(self):
-        if self.deposit_spin.value() <= 0:
-            QMessageBox.warning(self, "Zaklad kerak", "Zaklad 0 dan katta bo'lishi kerak.")
+        text = self.deposit_edit.text().strip()
+        if not text or self._deposit_value() <= 0:
+            QMessageBox.warning(
+                self,
+                t("Zaklad kerak", self.language),
+                t("Zaklad faqat 0 dan katta musbat raqam bo'lishi kerak.", self.language),
+            )
             return
         self.accept()
+
+    def _deposit_value(self):
+        text = self.deposit_edit.text().strip().replace(" ", "").replace(",", ".")
+        try:
+            return max(0, float(text)) if text else 0
+        except ValueError:
+            return 0
+
+    def _format_amount(self, value):
+        return f"{value:.2f}".rstrip("0").rstrip(".")
 
 
 class ProductArchiveDialog(QDialog):
@@ -940,28 +966,6 @@ class ProductDialog(QDialog):
         money_validator = QDoubleValidator(0, 999999999, 4, self)
         money_validator.setNotation(QDoubleValidator.Notation.StandardNotation)
 
-        self.price_spin = QLineEdit()
-        self.price_spin.setValidator(money_validator)
-        self.price_spin.setPlaceholderText("0.0000")
-        price_value = (
-            self.product["price_original"] if self.product and self.product["price_original"] else
-            (self.product["price"] if self.product else 0)
-        )
-        if price_value:
-            self.price_spin.setText(self._format_money_input(price_value))
-        self.price_currency_combo = self._currency_combo(
-            self.product["price_currency"] if self.product and self.product["price_currency"] else "UZS"
-        )
-        self.price_currency_combo.currentIndexChanged.connect(self._update_price_labels)
-        self.price_spin.textChanged.connect(self._update_price_labels)
-        price_row = QHBoxLayout()
-        price_row.addWidget(self.price_spin)
-        price_row.addWidget(self.price_currency_combo)
-        form.addRow("Sotish narxi *:", price_row)
-        self.price_uzs_lbl = QLabel("")
-        self.price_uzs_lbl.setStyleSheet("color:#64748b;font-size:12px;")
-        form.addRow("", self.price_uzs_lbl)
-
         self.cost_spin = QLineEdit()
         self.cost_spin.setValidator(money_validator)
         self.cost_spin.setPlaceholderText("0.0000")
@@ -972,7 +976,7 @@ class ProductDialog(QDialog):
         if cost_value:
             self.cost_spin.setText(self._format_money_input(cost_value))
         self.cost_currency_combo = self._currency_combo(
-            self.product["cost_currency"] if self.product and self.product["cost_currency"] else "UZS"
+            self.product["cost_currency"] if self.product and self.product["cost_currency"] else self._default_currency_code()
         )
         self.cost_currency_combo.currentIndexChanged.connect(self._update_price_labels)
         self.cost_spin.textChanged.connect(self._update_price_labels)
@@ -983,6 +987,28 @@ class ProductDialog(QDialog):
         self.cost_uzs_lbl = QLabel("")
         self.cost_uzs_lbl.setStyleSheet("color:#64748b;font-size:12px;")
         form.addRow("", self.cost_uzs_lbl)
+
+        self.price_spin = QLineEdit()
+        self.price_spin.setValidator(money_validator)
+        self.price_spin.setPlaceholderText("0.0000")
+        price_value = (
+            self.product["price_original"] if self.product and self.product["price_original"] else
+            (self.product["price"] if self.product else 0)
+        )
+        if price_value:
+            self.price_spin.setText(self._format_money_input(price_value))
+        self.price_currency_combo = self._currency_combo(
+            self.product["price_currency"] if self.product and self.product["price_currency"] else self._default_currency_code()
+        )
+        self.price_currency_combo.currentIndexChanged.connect(self._update_price_labels)
+        self.price_spin.textChanged.connect(self._update_price_labels)
+        price_row = QHBoxLayout()
+        price_row.addWidget(self.price_spin)
+        price_row.addWidget(self.price_currency_combo)
+        form.addRow("Sotish narxi *:", price_row)
+        self.price_uzs_lbl = QLabel("")
+        self.price_uzs_lbl.setStyleSheet("color:#64748b;font-size:12px;")
+        form.addRow("", self.price_uzs_lbl)
 
         self.stock_spin = QSpinBox()
         self.stock_spin.setRange(1, 9999999)
@@ -1004,6 +1030,7 @@ class ProductDialog(QDialog):
 
         self.print_barcode_check = QCheckBox("Saqlagandan keyin barcode chiqarish")
         self.print_barcode_check.setVisible(not self.product or self.duplicate)
+        self.print_barcode_check.setChecked(not self.product or self.duplicate)
         self.print_barcode_check.setStyleSheet("margin:0 24px;color:#1e293b;font-size:13px;font-weight:600;")
         layout.addWidget(self.print_barcode_check)
 
@@ -1091,12 +1118,23 @@ class ProductDialog(QDialog):
 
     def _currency_combo(self, selected_code):
         combo = QComboBox()
-        for currency in self.currencies:
+        for currency in self._ordered_currencies():
             combo.addItem(currency["code"], currency)
         idx = combo.findText(selected_code)
         if idx >= 0:
             combo.setCurrentIndex(idx)
         return combo
+
+    def _ordered_currencies(self):
+        priority = {"USD": 0, "EUR": 1, "UZS": 2}
+        return sorted(
+            self.currencies,
+            key=lambda currency: (priority.get(currency["code"], 10), currency["code"]),
+        )
+
+    def _default_currency_code(self):
+        codes = {currency["code"] for currency in self.currencies}
+        return "USD" if "USD" in codes else "UZS"
 
     def _selected_currency(self, combo):
         return combo.currentData() or {"code": "UZS", "rate_to_uzs": 1}
@@ -1153,12 +1191,21 @@ class ProductsWidget(QWidget):
     def __init__(self, user=None):
         super().__init__()
         self.user = user
+        self._async_loader = None
+        self._search_timer = None
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
+        self.progress_bar = make_progress_bar()
+        layout.addWidget(self.progress_bar)
+        self._async_loader = AsyncDataLoader(self, self.progress_bar)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(lambda: self.load_data(self.search_edit.text()))
 
         # Toolbar
         toolbar = QHBoxLayout()
@@ -1170,7 +1217,7 @@ class ProductsWidget(QWidget):
                         padding: 0 12px; font-size: 13px; background: white; }
             QLineEdit:focus { border-color: #3b82f6; }
         """)
-        self.search_edit.textChanged.connect(self.load_data)
+        self.search_edit.textChanged.connect(self._queue_search)
         toolbar.addWidget(self.search_edit)
 
         self.supplier_filter = QComboBox()
@@ -1192,6 +1239,17 @@ class ProductsWidget(QWidget):
         """)
         self.template_filter.currentIndexChanged.connect(lambda _: self.load_data())
         toolbar.addWidget(self.template_filter)
+
+        self.display_currency_combo = QComboBox()
+        self.display_currency_combo.setFixedHeight(38)
+        self.display_currency_combo.setMinimumWidth(92)
+        self.display_currency_combo.setStyleSheet("""
+            QComboBox { border: 1px solid #d1d5db; border-radius: 6px;
+                        padding: 0 10px; font-size: 13px; background: white; }
+        """)
+        self._load_display_currency_combo()
+        self.display_currency_combo.currentIndexChanged.connect(lambda _: self.load_data())
+        toolbar.addWidget(self.display_currency_combo)
         toolbar.addStretch()
 
         templates_btn = QPushButton("Templatelar")
@@ -1243,11 +1301,15 @@ class ProductsWidget(QWidget):
         layout.addWidget(self.tabs)
         self._load_supplier_filter()
         self._load_template_filter()
+        self._load_display_currency_combo()
         self._update_clear_sold_button()
 
     def _on_tab_changed(self):
         self._update_clear_sold_button()
         self.load_data()
+
+    def _queue_search(self, *_args):
+        self._search_timer.start()
 
     def _update_clear_sold_button(self):
         if hasattr(self, "clear_sold_btn") and hasattr(self, "tabs"):
@@ -1257,7 +1319,7 @@ class ProductsWidget(QWidget):
         table = QTableWidget()
         table.setColumnCount(9)
         table.setHorizontalHeaderLabels([
-            "Nomi", "Template", "Shtrix-kod", "Narx", "Xarid", "Qoldiq", "Zaklad", "Amallar", "Copy"
+            "Nomi", "Template", "Shtrix-kod", "Xarid", "Narx", "Qoldiq", "Zaklad", "Amallar", "Copy"
         ])
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         table.horizontalHeader().setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
@@ -1278,7 +1340,7 @@ class ProductsWidget(QWidget):
         table = QTableWidget()
         table.setColumnCount(10)
         table.setHorizontalHeaderLabels([
-            "Nomi", "Template", "Shtrix-kod", "Narx", "Xarid",
+            "Nomi", "Template", "Shtrix-kod", "Xarid", "Narx",
             "Qoldiq", "Zaklad", "Mijoz", "Telefon", "Amallar"
         ])
         table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
@@ -1295,15 +1357,15 @@ class ProductsWidget(QWidget):
 
     def _create_sold_table(self):
         table = QTableWidget()
-        table.setColumnCount(11)
+        table.setColumnCount(13)
         table.setHorizontalHeaderLabels([
             "Vaqt", "Sotuv", "Mahsulot", "Shtrix-kod", "Sotildi",
-            "Qaytdi", "Narx", "To'lov", "Mijoz", "Telefon", "Amal"
+            "Qaytdi", "Narx", "Chegirma", "Chegirmadan keyin", "To'lov", "Mijoz", "Telefon", "Amal"
         ])
         table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         for column, width in [
             (0, 150), (1, 70), (3, 110), (4, 80), (5, 80),
-            (6, 120), (7, 110), (8, 130), (9, 130), (10, 130)
+            (6, 120), (7, 110), (8, 140), (9, 110), (10, 130), (11, 130), (12, 130)
         ]:
             table.horizontalHeader().setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
             table.setColumnWidth(column, width)
@@ -1327,13 +1389,13 @@ class ProductsWidget(QWidget):
             QTableWidget::item:alternate { background: #f8fafc; }
         """
 
-    def _load_supplier_filter(self):
+    def _load_supplier_filter(self, suppliers=None):
         current = self.supplier_filter.currentData() if hasattr(self, "supplier_filter") else None
         self.supplier_filter.blockSignals(True)
         self.supplier_filter.clear()
         self.supplier_filter.addItem("Barcha ta'minotchilar", None)
         self.supplier_filter.addItem("Ta'minotchi tanlanmagan", "none")
-        for supplier in db.get_all_suppliers():
+        for supplier in suppliers if suppliers is not None else db.get_all_suppliers():
             self.supplier_filter.addItem(supplier["name"], supplier["id"])
         if current is not None:
             idx = self.supplier_filter.findData(current)
@@ -1341,13 +1403,13 @@ class ProductsWidget(QWidget):
                 self.supplier_filter.setCurrentIndex(idx)
         self.supplier_filter.blockSignals(False)
 
-    def _load_template_filter(self):
+    def _load_template_filter(self, templates=None):
         current = self.template_filter.currentData() if hasattr(self, "template_filter") else None
         self.template_filter.blockSignals(True)
         self.template_filter.clear()
         self.template_filter.addItem("Barcha templatelar", None)
         self.template_filter.addItem("Template tanlanmagan", "none")
-        for template in db.get_templates():
+        for template in templates if templates is not None else db.get_templates():
             self.template_filter.addItem(template["name"], template["id"])
         if current is not None:
             idx = self.template_filter.findData(current)
@@ -1355,17 +1417,76 @@ class ProductsWidget(QWidget):
                 self.template_filter.setCurrentIndex(idx)
         self.template_filter.blockSignals(False)
 
+    def _load_display_currency_combo(self, currencies=None):
+        if not hasattr(self, "display_currency_combo"):
+            return
+        current = self.display_currency_combo.currentData()
+        self.display_currency_combo.blockSignals(True)
+        self.display_currency_combo.clear()
+        currencies = [dict(currency) for currency in (currencies if currencies is not None else db.get_currencies())]
+        priority = {"UZS": 0, "USD": 1, "EUR": 2}
+        currencies.sort(key=lambda currency: (priority.get(currency["code"], 10), currency["code"]))
+        for currency in currencies:
+            self.display_currency_combo.addItem(currency["code"], currency)
+        if not currencies:
+            self.display_currency_combo.addItem("UZS", {"code": "UZS", "rate_to_uzs": 1})
+        if current:
+            idx = self.display_currency_combo.findText(current["code"], Qt.MatchFlag.MatchStartsWith)
+            if idx >= 0:
+                self.display_currency_combo.setCurrentIndex(idx)
+        self.display_currency_combo.blockSignals(False)
+
+    def _selected_display_currency(self):
+        if hasattr(self, "display_currency_combo"):
+            return self.display_currency_combo.currentData() or {"code": "UZS", "rate_to_uzs": 1}
+        return {"code": "UZS", "rate_to_uzs": 1}
+
+    def _money_display(self, amount_uzs):
+        currency = self._selected_display_currency()
+        code = currency.get("code") or "UZS"
+        rate = currency.get("rate_to_uzs") or 1
+        value = (amount_uzs or 0) / rate
+        if code == "UZS":
+            unit = t("so'm", self.property("app_language") or "uz")
+            return f"{value:,.0f} {unit}"
+        return f"{value:,.2f} {code}"
+
     def load_data(self, query=None):
-        self._load_supplier_filter()
-        self._load_template_filter()
         if query is not None and not isinstance(query, str):
             query = None
         if query is None:
             query = self.search_edit.text() if hasattr(self, 'search_edit') else ""
 
-        products = db.search_products(query) if query else db.get_all_products()
+        if self.isVisible():
+            self._async_loader.start(
+                lambda: {
+                    "query": query,
+                    "products": db.search_products(query) if query else db.get_all_products(),
+                    "sold_rows": [dict(row) for row in db.get_product_sales_archive(query)],
+                    "suppliers": db.get_all_suppliers(),
+                    "templates": db.get_templates(),
+                    "currencies": [dict(currency) for currency in db.get_currencies()],
+                },
+                self._apply_loaded_data,
+            )
+            return
+
+        self._apply_loaded_data({
+            "query": query,
+            "products": db.search_products(query) if query else db.get_all_products(),
+            "sold_rows": [dict(row) for row in db.get_product_sales_archive(query)],
+            "suppliers": db.get_all_suppliers(),
+            "templates": db.get_templates(),
+            "currencies": [dict(currency) for currency in db.get_currencies()],
+        })
+
+    def _apply_loaded_data(self, data):
+        self._load_supplier_filter(data["suppliers"])
+        self._load_template_filter(data["templates"])
+        self._load_display_currency_combo(data["currencies"])
+        products = data["products"]
         products = self._apply_product_filters(products)
-        sold_rows = self._filtered_sold_rows(query)
+        sold_rows = self._apply_product_filters(data["sold_rows"])
         sold_count = len(sold_rows)
 
         available = [p for p in products if self._available_quantity(p) > 0]
@@ -1420,17 +1541,13 @@ class ProductsWidget(QWidget):
             table.setItem(row, 1, QTableWidgetItem(p["template_name"] or ""))
             table.setItem(row, 2, QTableWidgetItem(p["barcode"] or ""))
 
-            price_original = p["price_original"] or p["price"]
-            price_currency = p["price_currency"] or "UZS"
-            price_item = QTableWidgetItem(f"{p['price']:,.0f} so'm ({price_original:,.2f} {price_currency})")
-            price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            table.setItem(row, 3, price_item)
-
-            cost_original = p["cost_original"] or p["cost"]
-            cost_currency = p["cost_currency"] or "UZS"
-            cost_item = QTableWidgetItem(f"{p['cost']:,.0f} so'm ({cost_original:,.2f} {cost_currency})")
+            cost_item = QTableWidgetItem(self._money_display(p["cost"]))
             cost_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-            table.setItem(row, 4, cost_item)
+            table.setItem(row, 3, cost_item)
+
+            price_item = QTableWidgetItem(self._money_display(p["price"]))
+            price_item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            table.setItem(row, 4, price_item)
 
             stock_item = QTableWidgetItem(f"{p['stock']}")
             if mode == "available":
@@ -1443,7 +1560,8 @@ class ProductsWidget(QWidget):
             table.setItem(row, 5, stock_item)
             deposit = _row_value(p, "process_deposit", 0) or 0
             deposit_currency = _row_value(p, "process_deposit_currency", "UZS") or "UZS"
-            deposit_text = f"{deposit:,.2f} {deposit_currency}" if mode == "process" else ""
+            deposit_rate = (db.get_currency(deposit_currency) or {}).get("rate_to_uzs", 1) or 1
+            deposit_text = self._money_display(deposit * deposit_rate) if mode == "process" else ""
             table.setItem(row, 6, QTableWidgetItem(deposit_text))
             action_column = 7
             if mode == "process":
@@ -1538,7 +1656,9 @@ class ProductsWidget(QWidget):
                 data["barcode"] or "",
                 str(data["quantity"]),
                 str(data["returned_quantity"]),
-                f"{data['price']:,.0f} so'm",
+                self._money_display(data["price"]),
+                self._money_display(data.get("item_discount", data.get("discount", 0)) or 0),
+                self._money_display(data.get("item_total_after_discount", data.get("active_subtotal", data.get("subtotal", 0))) or 0),
                 self._payment_label(data["payment_method"]),
                 data["customer_name"] or "",
                 data["customer_phone"] or "",
@@ -1547,10 +1667,10 @@ class ProductsWidget(QWidget):
                 item = QTableWidgetItem(value)
                 if column == 0:
                     item.setData(Qt.ItemDataRole.UserRole, data)
-                if column in (4, 5, 6):
+                if column in (4, 5, 6, 7, 8):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self.sold_table.setItem(row_index, column, item)
-            self.sold_table.setCellWidget(row_index, 10, self._sold_actions_widget(row_index))
+            self.sold_table.setCellWidget(row_index, 12, self._sold_actions_widget(row_index))
             self.sold_table.setRowHeight(row_index, 54)
 
     def _sold_actions_widget(self, row):
@@ -1732,10 +1852,19 @@ class ProductsWidget(QWidget):
                 QMessageBox.warning(self, t("Jarayonga o'tkazilmadi", language), str(exc))
 
     def _move_to_available(self, row, table=None):
+        language = self.property("app_language") or "uz"
         item = self._product_item(row, table)
         if not item:
             return
         product = item.data(Qt.ItemDataRole.UserRole)
+        reply = QMessageBox.question(
+            self,
+            t("Tasdiqlash", language),
+            t("Mahsulot bor mahsulotlarga qaytarilsinmi?", language),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
         db.clear_product_process(product["id"])
         self.load_data()
         self.tabs.setCurrentWidget(self.table)
@@ -1764,7 +1893,7 @@ class ProductsWidget(QWidget):
             try:
                 db.update_product_process(
                     product["id"],
-                    data["quantity"],
+                    initial["quantity"],
                     data["deposit_amount"],
                     data["deposit_currency"],
                     data["customer_name"],
@@ -1795,40 +1924,44 @@ class ProductsWidget(QWidget):
                 t("Bu mahsulot uchun jarayondagi miqdor yo'q.", language),
             )
             return
-        process_product = dict(product)
-        process_product["stock"] = process_quantity
-        dlg = ProcessSaleDialog(self, process_product)
-        if dlg.exec():
-            quantity = dlg.quantity()
+        reply = QMessageBox.question(
+            self,
+            t("Sotuvni yakunlash", language),
+            t("Jarayondagi sotuv yakunlansinmi?", language),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        quantity = process_quantity
+        try:
             subtotal = product["price"] * quantity
-            try:
-                sale_id = db.create_sale(
-                    customer_id=None,
-                    cashier_id=self.user["id"] if self.user else None,
-                    items=[{
-                        "product_id": product["id"],
-                        "quantity": quantity,
-                        "price": product["price"],
-                        "subtotal": subtotal,
-                    }],
-                    total=subtotal,
-                    discount=0,
-                    paid=subtotal,
-                    payment_method="naqd",
-                    currency_code=product["price_currency"] or "UZS",
-                    exchange_rate=product["price_exchange_rate"] or 1,
-                    paid_original=(product["price_original"] or product["price"]) * quantity,
-                )
-                db.reduce_product_process(product["id"], quantity)
-                QMessageBox.information(
-                    self,
-                    t("Sotuv yakunlandi", language),
-                    f"{t('Sotuv', language)} #{sale_id} {t('saqlandi.', language)}",
-                )
-                self.load_data()
-                self.tabs.setCurrentWidget(self.sold_table)
-            except db.AppError as exc:
-                QMessageBox.warning(self, t("Sotuv yakunlanmadi", language), str(exc))
+            sale_id = db.create_sale(
+                customer_id=None,
+                cashier_id=self.user["id"] if self.user else None,
+                items=[{
+                    "product_id": product["id"],
+                    "quantity": quantity,
+                    "price": product["price"],
+                    "subtotal": subtotal,
+                }],
+                total=subtotal,
+                discount=0,
+                paid=subtotal,
+                payment_method="naqd",
+                currency_code=product["price_currency"] or "UZS",
+                exchange_rate=product["price_exchange_rate"] or 1,
+                paid_original=(product["price_original"] or product["price"]) * quantity,
+            )
+            db.reduce_product_process(product["id"], quantity)
+            QMessageBox.information(
+                self,
+                t("Sotuv yakunlandi", language),
+                f"{t('Sotuv', language)} #{sale_id} {t('saqlandi.', language)}",
+            )
+            self.load_data()
+            self.tabs.setCurrentWidget(self.sold_table)
+        except db.AppError as exc:
+            QMessageBox.warning(self, t("Sotuv yakunlanmadi", language), str(exc))
 
     def _edit_product(self, row, table=None):
         language = self.property("app_language") or "uz"

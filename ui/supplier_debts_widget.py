@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QDoubleValidator
 import database as db
+from ui.async_loader import AsyncDataLoader, make_progress_bar
 from ui.i18n import set_language, t
 
 
@@ -215,12 +216,16 @@ class SupplierDebtsWidget(QWidget):
     def __init__(self):
         super().__init__()
         self.tables = {}
+        self._async_loader = None
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
+        self.progress_bar = make_progress_bar()
+        layout.addWidget(self.progress_bar)
+        self._async_loader = AsyncDataLoader(self, self.progress_bar)
 
         toolbar = QHBoxLayout()
         self.total_lbl = QLabel()
@@ -266,9 +271,22 @@ class SupplierDebtsWidget(QWidget):
         return table
 
     def load_data(self):
-        self._load_total_currency_combo()
-        self._load_table("supplier", db.get_all_suppliers())
-        self._load_table("debtor", db.get_all_debtors())
+        if self.isVisible():
+            self._async_loader.start(
+                lambda: (db.get_all_suppliers(), db.get_all_debtors(), db.get_currencies()),
+                self._apply_loaded_data,
+            )
+            return
+        self._apply_loaded_data((db.get_all_suppliers(), db.get_all_debtors(), db.get_currencies()))
+
+    def _apply_loaded_data(self, data):
+        suppliers, debtors, currencies = data
+        self._suppliers = suppliers
+        self._debtors = debtors
+        self._currencies = currencies
+        self._load_total_currency_combo(currencies)
+        self._load_table("supplier", suppliers)
+        self._load_table("debtor", debtors)
         self._update_toolbar()
         set_language(self, self.property("app_language") or "uz")
 
@@ -342,7 +360,7 @@ class SupplierDebtsWidget(QWidget):
     def _update_toolbar(self):
         kind = self._current_kind()
         language = self.property("app_language") or "uz"
-        rows = db.get_all_suppliers() if kind == "supplier" else db.get_all_debtors()
+        rows = getattr(self, "_suppliers", []) if kind == "supplier" else getattr(self, "_debtors", [])
         target_currency = self.total_currency_combo.currentData() if hasattr(self, "total_currency_combo") else "UZS"
         target_currency = target_currency or "UZS"
         total = self._converted_debt_total(rows, target_currency)
@@ -350,11 +368,11 @@ class SupplierDebtsWidget(QWidget):
         self.total_lbl.setText(f"{t(title, language)}: {total:,.2f} {target_currency}")
         self.add_btn.setText(t("+ Ta'minotchi" if kind == "supplier" else "+ Qarz oluvchi", language))
 
-    def _load_total_currency_combo(self):
+    def _load_total_currency_combo(self, currencies=None):
         current = self.total_currency_combo.currentData() if hasattr(self, "total_currency_combo") else "UZS"
         self.total_currency_combo.blockSignals(True)
         self.total_currency_combo.clear()
-        available = {currency["code"] for currency in db.get_currencies()}
+        available = {currency["code"] for currency in (currencies if currencies is not None else db.get_currencies())}
         for code in ("UZS", "USD", "EUR"):
             if code in available or code == "UZS":
                 self.total_currency_combo.addItem(code, code)
@@ -365,7 +383,7 @@ class SupplierDebtsWidget(QWidget):
 
     def _currency_rate_map(self):
         rates = {"UZS": 1}
-        for currency in db.get_currencies():
+        for currency in getattr(self, "_currencies", None) or db.get_currencies():
             rates[currency["code"]] = currency["rate_to_uzs"] or 1
         return rates
 

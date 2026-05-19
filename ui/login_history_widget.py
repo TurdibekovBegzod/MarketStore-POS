@@ -4,18 +4,23 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 import database as db
+from ui.async_loader import AsyncDataLoader, make_progress_bar
 from ui.i18n import set_language, t
 
 
 class LoginHistoryWidget(QWidget):
     def __init__(self):
         super().__init__()
+        self._async_loader = None
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
+        self.progress_bar = make_progress_bar()
+        layout.addWidget(self.progress_bar)
+        self._async_loader = AsyncDataLoader(self, self.progress_bar)
 
         toolbar = QHBoxLayout()
         toolbar.addStretch()
@@ -56,8 +61,14 @@ class LoginHistoryWidget(QWidget):
         layout.addWidget(self.table)
 
     def load_data(self):
+        if self.isVisible():
+            self._async_loader.start(db.get_login_logs, self._apply_loaded_data)
+            return
+        self._apply_loaded_data(db.get_login_logs())
+
+    def _apply_loaded_data(self, logs):
         self.table.setRowCount(0)
-        for row, log in enumerate(db.get_login_logs()):
+        for row, log in enumerate(logs):
             self.table.insertRow(row)
             self.table.setItem(row, 0, QTableWidgetItem(log["logged_at"] or ""))
             self.table.setItem(row, 1, QTableWidgetItem(log["username"] or ""))

@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 import database as db
+from ui.async_loader import AsyncDataLoader, make_progress_bar
 from ui.i18n import set_language
 
 
@@ -80,12 +81,16 @@ class UserDialog(QDialog):
 class UsersWidget(QWidget):
     def __init__(self):
         super().__init__()
+        self._async_loader = None
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
+        self.progress_bar = make_progress_bar()
+        layout.addWidget(self.progress_bar)
+        self._async_loader = AsyncDataLoader(self, self.progress_bar)
 
         toolbar = QHBoxLayout()
         toolbar.addStretch()
@@ -110,8 +115,14 @@ class UsersWidget(QWidget):
         layout.addWidget(self.table)
 
     def load_data(self):
+        if self.isVisible():
+            self._async_loader.start(db.get_users, self._apply_loaded_data)
+            return
+        self._apply_loaded_data(db.get_users())
+
+    def _apply_loaded_data(self, users):
         self.table.setRowCount(0)
-        for row, user in enumerate(db.get_users()):
+        for row, user in enumerate(users):
             self.table.insertRow(row)
             username_item = QTableWidgetItem(user["username"])
             username_item.setData(Qt.ItemDataRole.UserRole, dict(user))

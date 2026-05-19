@@ -4,9 +4,10 @@ from PyQt6.QtWidgets import (
     QFrame, QMessageBox, QHeaderView, QSpinBox, QDoubleSpinBox,
     QDialog, QFormLayout, QCheckBox
 )
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QFont, QColor
+from PyQt6.QtCore import Qt, pyqtSignal, QRegularExpression, QTimer
+from PyQt6.QtGui import QFont, QColor, QRegularExpressionValidator
 import database as db
+from ui.async_loader import AsyncDataLoader, make_progress_bar
 from ui.i18n import set_language, t
 
 
@@ -288,17 +289,30 @@ class SalesWidget(QWidget):
         super().__init__()
         self.user = user
         self.cart = []
+        self._async_loader = None
+        self._search_timer = None
         self._build_ui()
         self.load_data()
 
     def _build_ui(self):
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
+        root_layout = QVBoxLayout(self)
+        root_layout.setContentsMargins(16, 16, 16, 16)
+        root_layout.setSpacing(12)
+
+        self.progress_bar = make_progress_bar()
+        root_layout.addWidget(self.progress_bar)
+        self._async_loader = AsyncDataLoader(self, self.progress_bar)
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(250)
+        self._search_timer.timeout.connect(self._run_product_search)
+
+        layout = QHBoxLayout()
         layout.setSpacing(16)
+        root_layout.addLayout(layout, 1)
 
         # ── Left: Search + Products ───────────────────────
         left = QVBoxLayout()
-
         search_row = QHBoxLayout()
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Mahsulot nomi yoki shtrix-kod... Skaner Enter yuborsa savatga qo'shiladi")
@@ -349,16 +363,21 @@ class SalesWidget(QWidget):
         disc_row = QHBoxLayout()
         disc_lbl = QLabel("Chegirma:")
         disc_lbl.setFixedWidth(70)
-        self.discount_spin = QDoubleSpinBox()
-        self.discount_spin.setRange(0, 100000000)
-        self.discount_spin.setPrefix("- ")
-        self.discount_spin.setSuffix(" so'm")
-        self.discount_spin.setMinimumHeight(40)
-        self.discount_spin.setMinimumWidth(190)
-        self.discount_spin.setStyleSheet(self._input_style())
-        self.discount_spin.valueChanged.connect(self._update_totals)
+        self.discount_edit = QLineEdit()
+        self.discount_edit.setPlaceholderText("0.00")
+        self.discount_edit.setValidator(QRegularExpressionValidator(QRegularExpression(r"^\d*([.,]\d{0,2})?$"), self))
+        self.discount_edit.setMinimumHeight(40)
+        self.discount_edit.setMinimumWidth(120)
+        self.discount_edit.setStyleSheet(self._input_style())
+        self.discount_edit.textChanged.connect(self._update_totals)
+        self.discount_currency_combo = QComboBox()
+        self.discount_currency_combo.setMinimumHeight(40)
+        self.discount_currency_combo.setMinimumWidth(86)
+        self.discount_currency_combo.setStyleSheet(self._input_style())
+        self.discount_currency_combo.currentIndexChanged.connect(self._update_totals)
         disc_row.addWidget(disc_lbl)
-        disc_row.addWidget(self.discount_spin)
+        disc_row.addWidget(self.discount_edit)
+        disc_row.addWidget(self.discount_currency_combo)
         right.addLayout(disc_row)
 
         # Totals card
@@ -439,15 +458,30 @@ class SalesWidget(QWidget):
         layout.addLayout(right, 2)
 
     def load_data(self):
-        self._load_products()
-        self._load_currencies()
+        query = self.search_edit.text() if hasattr(self, "search_edit") else ""
+        if self.isVisible():
+            self._async_loader.start(
+                lambda: (
+                    db.search_products(query) if query else db.get_all_products(),
+                    [dict(currency) for currency in db.get_currencies()],
+                ),
+                self._apply_loaded_data,
+            )
+            return
+        self._apply_loaded_data((
+            db.search_products(query) if query else db.get_all_products(),
+            [dict(currency) for currency in db.get_currencies()],
+        ))
+
+    def _apply_loaded_data(self, data):
+        products, currencies = data
+        self._load_products(products=products)
+        self._load_currencies(currencies)
         set_language(self, self.property("app_language") or "uz")
 
-    def _load_products(self, query=""):
-        if query:
-            products = db.search_products(query)
-        else:
-            products = db.get_all_products()
+    def _load_products(self, query="", products=None):
+        if products is None:
+            products = db.search_products(query) if query else db.get_all_products()
 
         self.products_table.setRowCount(0)
         for row, p in enumerate(products):
@@ -480,21 +514,50 @@ class SalesWidget(QWidget):
             self.products_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, dict(p))
         set_language(self, self.property("app_language") or "uz")
 
-    def _load_currencies(self):
+    def _load_currencies(self, currencies=None):
         current = self.currency_combo.currentData() if hasattr(self, "currency_combo") else None
+        discount_current = self.discount_currency_combo.currentData() if hasattr(self, "discount_currency_combo") else None
+        currencies = currencies if currencies is not None else [dict(currency) for currency in db.get_currencies()]
         self.currency_combo.blockSignals(True)
         self.currency_combo.clear()
-        for currency in db.get_currencies():
+        for currency in currencies:
             self.currency_combo.addItem(f"{currency['code']} - {currency['name']}", dict(currency))
         if current:
             idx = self.currency_combo.findText(current["code"], Qt.MatchFlag.MatchStartsWith)
             if idx >= 0:
                 self.currency_combo.setCurrentIndex(idx)
         self.currency_combo.blockSignals(False)
+
+        self.discount_currency_combo.blockSignals(True)
+        self.discount_currency_combo.clear()
+        for currency in currencies:
+            self.discount_currency_combo.addItem(currency["code"], dict(currency))
+        if discount_current:
+            idx = self.discount_currency_combo.findText(discount_current["code"], Qt.MatchFlag.MatchStartsWith)
+            if idx >= 0:
+                self.discount_currency_combo.setCurrentIndex(idx)
+        self.discount_currency_combo.blockSignals(False)
         self._on_currency_changed()
 
     def _selected_currency(self):
         return self.currency_combo.currentData() or {"code": "UZS", "rate_to_uzs": 1}
+
+    def _selected_discount_currency(self):
+        return self.discount_currency_combo.currentData() or {"code": "UZS", "rate_to_uzs": 1}
+
+    def _amount_from_line_edit(self, edit):
+        text = edit.text().strip().replace(" ", "").replace(",", ".")
+        try:
+            return max(0, float(text)) if text else 0
+        except ValueError:
+            return 0
+
+    def _discount_value_uzs(self):
+        currency = self._selected_discount_currency()
+        return self._amount_from_line_edit(self.discount_edit) * (currency["rate_to_uzs"] or 1)
+
+    def _format_amount(self, value):
+        return f"{value:.2f}".rstrip("0").rstrip(".")
 
     def _on_currency_changed(self):
         self._update_totals()
@@ -510,16 +573,25 @@ class SalesWidget(QWidget):
 
     def _language_changed(self, language):
         self.setProperty("app_language", language)
-        self.discount_spin.setSuffix(f" {self._money_unit()}")
         self._update_totals()
 
     def _manage_currencies(self):
         dlg = CurrencyDialog(self)
         dlg.exec()
-        self._load_currencies()
-        self._load_products(self.search_edit.text())
+        self.load_data()
 
     def _search_products(self, text):
+        self._pending_search_text = text
+        self._search_timer.start()
+
+    def _run_product_search(self):
+        text = getattr(self, "_pending_search_text", self.search_edit.text())
+        if self.isVisible():
+            self._async_loader.start(
+                lambda: db.search_products(text) if text else db.get_all_products(),
+                lambda products: self._load_products(products=products),
+            )
+            return
         self._load_products(text)
 
     def _scan_barcode(self):
@@ -638,11 +710,14 @@ class SalesWidget(QWidget):
 
     def _update_totals(self):
         subtotal = sum(i["subtotal"] for i in self.cart)
-        if self.discount_spin.value() > subtotal:
-            self.discount_spin.blockSignals(True)
-            self.discount_spin.setValue(subtotal)
-            self.discount_spin.blockSignals(False)
-        discount = self.discount_spin.value()
+        discount = self._discount_value_uzs()
+        if discount > subtotal:
+            discount_currency = self._selected_discount_currency()
+            rate = discount_currency["rate_to_uzs"] or 1
+            self.discount_edit.blockSignals(True)
+            self.discount_edit.setText(self._format_amount(subtotal / rate))
+            self.discount_edit.blockSignals(False)
+            discount = subtotal
         total = max(0, subtotal - discount)
         language = self._language()
         money_unit = self._money_unit()
@@ -661,7 +736,7 @@ class SalesWidget(QWidget):
             return
 
         subtotal = sum(i["subtotal"] for i in self.cart)
-        discount = self.discount_spin.value()
+        discount = min(self._discount_value_uzs(), subtotal)
         total = max(0, subtotal - discount)
         currency = self._selected_currency()
         rate = currency["rate_to_uzs"] or 1
@@ -717,7 +792,7 @@ class SalesWidget(QWidget):
     def _clear_cart(self):
         self.cart.clear()
         self.cart_table.setRowCount(0)
-        self.discount_spin.setValue(0)
+        self.discount_edit.clear()
         self._update_totals()
 
     def _input_style(self):

@@ -5,17 +5,22 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 import database as db
+from ui.async_loader import AsyncDataLoader, make_progress_bar
 
 
 class CustomersWidget(QWidget):
     def __init__(self):
         super().__init__()
+        self._async_loader = None
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
+        self.progress_bar = make_progress_bar()
+        layout.addWidget(self.progress_bar)
+        self._async_loader = AsyncDataLoader(self, self.progress_bar)
         toolbar = QHBoxLayout()
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("🔍 Mijoz qidirish...")
@@ -54,7 +59,13 @@ class CustomersWidget(QWidget):
 
     def load_data(self):
         query = self.search_edit.text() if hasattr(self, 'search_edit') else ""
-        customers = db.get_all_customers()
+        if self.isVisible():
+            self._async_loader.start(lambda: (db.get_all_customers(), query), self._apply_loaded_data)
+            return
+        self._apply_loaded_data((db.get_all_customers(), query))
+
+    def _apply_loaded_data(self, data):
+        customers, query = data
         if query:
             customers = [c for c in customers if query.lower() in c["name"].lower()
                          or (c["phone"] and query in c["phone"])]

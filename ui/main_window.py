@@ -6,7 +6,7 @@ from PyQt6.QtWidgets import (
     QTextEdit, QDateEdit, QTabWidget, QScrollArea
 )
 from PyQt6.QtCore import QTimer, Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QPainter
 from datetime import datetime
 import database as db
 
@@ -18,11 +18,32 @@ from ui.users_widget import UsersWidget
 from ui.login_history_widget import LoginHistoryWidget
 from ui.supplier_debts_widget import SupplierDebtsWidget
 from ui.expenses_widget import ExpensesWidget
+from ui.finance_widget import FinanceWidget
 from ui.checking_widget import CheckingWidget
 from ui.i18n import set_language
 
 
 DESKTOP_ICON_PATH = "images/desktop.png"
+
+
+class NavGroupButton(QPushButton):
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.expanded = False
+
+    def setExpanded(self, expanded):
+        self.expanded = expanded
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setPen(self.palette().buttonText().color())
+        painter.drawText(
+            self.rect().adjusted(0, 0, -14, 0),
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
+            "v" if self.expanded else ">",
+        )
 
 
 THEMES = {
@@ -88,7 +109,7 @@ TEXTS = {
         "logout": "Chiqish", "logout_q": "Haqiqatan chiqmoqchimisiz?",
         "Admin": "Admin", "Kassir": "Kassir", "sales": "Sotuv",
         "products": "Mahsulotlar", "stock": "Ombor",
-        "reports": "Hisobotlar", "supplier_debts": "Qarzlar", "expenses": "Harajatlar",
+        "reports": "Hisobotlar", "finance": "Finance", "supplier_debts": "Qarzlar", "expenses": "Harajatlar",
         "checking": "Tekshiruv",
         "users": "Kassirlar", "login_history": "Kirish tarixi",
     },
@@ -98,7 +119,7 @@ TEXTS = {
         "logout": "Logout", "logout_q": "Do you really want to log out?",
         "Admin": "Admin", "Kassir": "Cashier", "sales": "Sales",
         "products": "Products", "stock": "Stock",
-        "reports": "Reports", "supplier_debts": "Debts", "expenses": "Expenses",
+        "reports": "Reports", "finance": "Finance", "supplier_debts": "Debts", "expenses": "Expenses",
         "checking": "Checking",
         "users": "Cashiers", "login_history": "Login history",
     },
@@ -109,7 +130,7 @@ TEXTS = {
         "logout": "Выход", "logout_q": "Вы действительно хотите выйти?",
         "Admin": "Админ", "Kassir": "Кассир", "sales": "Продажи",
         "products": "Товары", "stock": "Склад",
-        "reports": "Отчеты", "supplier_debts": "Долги", "expenses": "Расходы",
+        "reports": "Отчеты", "finance": "Финансы", "supplier_debts": "Долги", "expenses": "Расходы",
         "users": "Кассиры", "login_history": "История входа",
     },
 }
@@ -213,6 +234,12 @@ class MainWindow(QMainWindow):
         sb_layout.addWidget(self.logo_frame)
 
         self.nav_buttons = {}
+        self.nav_group_buttons = {}
+        self.nav_group_widgets = {}
+        self.nav_group_items = {
+            "products_group": ("products", "stock"),
+            "reports_group": ("reports", "finance"),
+        }
         nav_frame = QWidget()
         nav_frame.setStyleSheet("background: transparent;")
         nav_layout = QVBoxLayout(nav_frame)
@@ -222,9 +249,6 @@ class MainWindow(QMainWindow):
         nav_items = [(self.labels["sales"], "sales")]
         if self.user["role"] == "admin":
             nav_items.extend([
-                (self.labels["products"], "products"),
-                (self.labels["stock"], "stock"),
-                (self.labels["reports"], "reports"),
                 (self.labels["supplier_debts"], "supplier_debts"),
                 (self.labels["expenses"], "expenses"),
                 (self.labels.get("checking", "Checking"), "checking"),
@@ -241,6 +265,26 @@ class MainWindow(QMainWindow):
             btn.clicked.connect(lambda checked, k=key: self._switch_page(k))
             nav_layout.addWidget(btn)
             self.nav_buttons[key] = btn
+
+            if self.user["role"] == "admin" and key == "sales":
+                self._add_nav_group(
+                    nav_layout,
+                    "products_group",
+                    self.labels["products"],
+                    [
+                        (self.labels["products"], "products"),
+                        (self.labels["stock"], "stock"),
+                    ],
+                )
+                self._add_nav_group(
+                    nav_layout,
+                    "reports_group",
+                    self.labels["reports"],
+                    [
+                        (self.labels["reports"], "reports"),
+                        (self.labels.get("finance", "Finance"), "finance"),
+                    ],
+                )
 
         nav_layout.addStretch()
         sb_layout.addWidget(nav_frame)
@@ -297,8 +341,9 @@ class MainWindow(QMainWindow):
                 "products": ProductsWidget(self.user),
                 "stock": StockWidget(),
                 "reports": ReportsWidget(),
+                "finance": FinanceWidget(),
                 "supplier_debts": SupplierDebtsWidget(),
-                "expenses": ExpensesWidget(),
+                "expenses": ExpensesWidget(self.user),
                 "checking": CheckingWidget(self.user),
                 "users": UsersWidget(),
                 "login_history": LoginHistoryWidget(),
@@ -335,11 +380,114 @@ class MainWindow(QMainWindow):
             }
         """ % (theme["nav_text"], theme["nav_text"], theme["accent"], theme["nav_active"])
 
+    def _nav_child_btn_style(self):
+        theme = THEMES.get(self.settings.get("theme"), THEMES["dark_blue"])
+        return """
+            QPushButton {
+                text-align: left;
+                padding-left: 18px;
+                font-size: 13px;
+                color: %s;
+                background: transparent;
+                border: none;
+                border-radius: 7px;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,0.10);
+                color: %s;
+            }
+            QPushButton:checked {
+                background: %s;
+                color: %s;
+                font-weight: bold;
+            }
+        """ % (theme["nav_text"], theme["nav_text"], theme["accent"], theme["nav_active"])
+
+    def _nav_group_style(self):
+        theme = THEMES.get(self.settings.get("theme"), THEMES["dark_blue"])
+        return """
+            QPushButton {
+                text-align: left;
+                padding-left: 14px;
+                font-size: 14px;
+                color: %s;
+                background: transparent;
+                border: none;
+                border-radius: 8px;
+            }
+            QPushButton:hover {
+                background: rgba(255,255,255,0.12);
+                color: %s;
+            }
+            QPushButton:checked {
+                background: %s;
+                color: %s;
+                font-weight: bold;
+            }
+        """ % (theme["nav_text"], theme["nav_text"], theme["accent"], theme["nav_active"])
+
+    def _add_nav_group(self, nav_layout, group_key, label, items):
+        group_btn = NavGroupButton(f"  {label}")
+        group_btn.setFixedHeight(40)
+        group_btn.setCheckable(True)
+        group_btn.setObjectName(f"nav_group_{group_key}")
+        group_btn.setProperty("label_key", "products" if group_key == "products_group" else "reports")
+        group_btn.setStyleSheet(self._nav_group_style())
+        group_btn.clicked.connect(lambda checked, k=group_key: self._toggle_nav_group(k))
+        nav_layout.addWidget(group_btn)
+        self.nav_group_buttons[group_key] = group_btn
+
+        child_frame = QWidget()
+        child_frame.setObjectName(f"nav_group_children_{group_key}")
+        child_frame.setStyleSheet("background: transparent; border-left:1px solid rgba(148,163,184,0.35);")
+        child_layout = QVBoxLayout(child_frame)
+        child_layout.setContentsMargins(16, 2, 0, 4)
+        child_layout.setSpacing(3)
+        for child_label, child_key in items:
+            btn = QPushButton(f"  {child_label}")
+            btn.setFixedHeight(36)
+            btn.setCheckable(True)
+            btn.setObjectName(f"nav_{child_key}")
+            btn.setStyleSheet(self._nav_child_btn_style())
+            btn.clicked.connect(lambda checked, k=child_key: self._switch_page(k))
+            child_layout.addWidget(btn)
+            self.nav_buttons[child_key] = btn
+        nav_layout.addWidget(child_frame)
+        self.nav_group_widgets[group_key] = child_frame
+        child_frame.setVisible(False)
+        group_btn.setExpanded(False)
+        group_btn.setChecked(False)
+
+    def _toggle_nav_group(self, group_key):
+        group = self.nav_group_widgets.get(group_key)
+        button = self.nav_group_buttons.get(group_key)
+        if not group or not button:
+            return
+        visible = not group.isVisible()
+        group.setVisible(visible)
+        label = self.labels.get(button.property("label_key") or "reports", "Hisobotlar")
+        button.setText(f"  {label}")
+        button.setExpanded(visible)
+        button.setChecked(visible or any(self.nav_buttons[key].isChecked() for key in self.nav_group_items.get(group_key, ())))
+
+    def _is_group_child(self, key):
+        return any(key in items for items in self.nav_group_items.values())
+
     def _switch_page(self, key):
         if key not in self.pages:
             key = "sales"
         for k, btn in self.nav_buttons.items():
             btn.setChecked(k == key)
+        for group_key, group_btn in self.nav_group_buttons.items():
+            in_group = key in self.nav_group_items.get(group_key, ())
+            group_btn.setChecked(in_group)
+            if in_group:
+                self.nav_group_widgets[group_key].setVisible(True)
+                label = self.labels.get(group_btn.property("label_key") or "reports", "Hisobotlar")
+                group_btn.setText(f"  {label}")
+                group_btn.setExpanded(True)
+            else:
+                group_btn.setExpanded(self.nav_group_widgets[group_key].isVisible())
         self.stack.setCurrentWidget(self.pages[key])
         self.page_title_lbl.setText(self.labels.get(key, key))
 
@@ -391,13 +539,20 @@ class MainWindow(QMainWindow):
         self.settings_btn.setToolTip(self.labels["settings"])
         for key, btn in self.nav_buttons.items():
             btn.setText(f"  {self.labels.get(key, key)}")
-            btn.setStyleSheet(self._nav_btn_style())
+            btn.setStyleSheet(self._nav_child_btn_style() if self._is_group_child(key) else self._nav_btn_style())
+        for group_key, btn in self.nav_group_buttons.items():
+            label = self.labels.get(btn.property("label_key") or "reports", "Hisobotlar")
+            visible = self.nav_group_widgets.get(group_key) and self.nav_group_widgets[group_key].isVisible()
+            btn.setText(f"  {label}")
+            btn.setExpanded(visible)
+            btn.setStyleSheet(self._nav_group_style())
         current_key = next((key for key, page in self.pages.items() if page is self.stack.currentWidget()), "sales")
         self.page_title_lbl.setText(self.labels.get(current_key, current_key))
         for page in self.pages.values():
-            if hasattr(page, "load_data"):
-                page.load_data()
             set_language(page, self.settings.get("language", "uz"))
+        current_page = self.stack.currentWidget()
+        if hasattr(current_page, "load_data"):
+            current_page.load_data()
 
     def _apply_theme(self):
         theme = THEMES.get(self.settings.get("theme"), THEMES["dark_blue"])
@@ -429,8 +584,14 @@ class MainWindow(QMainWindow):
         self.topbar.setStyleSheet(f"background:{theme['topbar']};border-bottom:1px solid #e2e8f0;")
         self.page_title_lbl.setStyleSheet(f"font-size:18px;font-weight:bold;color:{theme['title']};")
         self.clock_lbl.setStyleSheet(f"color:{theme['muted']};font-size:13px;")
-        for btn in self.nav_buttons.values():
-            btn.setStyleSheet(self._nav_btn_style())
+        for key, btn in self.nav_buttons.items():
+            btn.setStyleSheet(self._nav_child_btn_style() if self._is_group_child(key) else self._nav_btn_style())
+        for group_key, btn in self.nav_group_buttons.items():
+            btn.setStyleSheet(self._nav_group_style())
+            if group_key in self.nav_group_widgets:
+                self.nav_group_widgets[group_key].setStyleSheet(
+                    "background: transparent; border-left:1px solid rgba(148,163,184,0.35);"
+                )
         app = QApplication.instance()
         if app:
             app.setStyleSheet(self._global_theme_style(theme))
@@ -485,9 +646,14 @@ class MainWindow(QMainWindow):
             table.horizontalHeader().setStyleSheet(self._header_style(theme))
         for field in page.findChildren((QLineEdit, QComboBox)):
             field.setStyleSheet(self._field_style(theme))
-        page.discount_spin.setStyleSheet(self._field_style(theme))
-        page.discount_spin.setMinimumHeight(40)
-        page.discount_spin.setMinimumWidth(190)
+        if hasattr(page, "discount_edit"):
+            page.discount_edit.setStyleSheet(self._field_style(theme))
+            page.discount_edit.setMinimumHeight(40)
+            page.discount_edit.setMinimumWidth(120)
+        if hasattr(page, "discount_currency_combo"):
+            page.discount_currency_combo.setStyleSheet(self._field_style(theme))
+            page.discount_currency_combo.setMinimumHeight(40)
+            page.discount_currency_combo.setMinimumWidth(86)
         complete_btn = page.findChild(QPushButton, "complete_sale_btn")
         if complete_btn:
             complete_btn.setFixedHeight(48)

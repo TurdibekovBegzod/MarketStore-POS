@@ -1,7 +1,7 @@
 import hashlib
 import secrets
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import (
     Column,
@@ -20,8 +20,7 @@ from sqlalchemy import (
     select,
 )
 from sqlalchemy.exc import IntegrityError, OperationalError
-from sqlalchemy.orm import declarative_base, relationship, sessionmaker
-from sqlalchemy.pool import NullPool
+from sqlalchemy.orm import Session, declarative_base, relationship, sessionmaker
 from sqlalchemy.sql import text
 
 
@@ -50,6 +49,17 @@ class Row(dict):
             return self[key]
         except KeyError as exc:
             raise AttributeError(key) from exc
+
+
+@event.listens_for(Session, "after_flush")
+def _mark_session_writes(session, _flush_context):
+    session.info["has_writes"] = True
+
+
+@event.listens_for(Session, "do_orm_execute")
+def _mark_bulk_writes(execute_state):
+    if execute_state.is_delete or execute_state.is_update:
+        execute_state.session.info["has_writes"] = True
 
 
 def _hash_password(password, salt=None):
@@ -81,8 +91,7 @@ def _get_engine():
         _ENGINE = create_engine(
             _database_url(),
             future=True,
-            connect_args={"timeout": 30},
-            poolclass=NullPool,
+            connect_args={"timeout": 30, "check_same_thread": False},
         )
 
         @event.listens_for(_ENGINE, "connect")
@@ -106,7 +115,10 @@ def session_scope():
     session = _session_factory()()
     try:
         yield session
-        session.commit()
+        if session.new or session.dirty or session.deleted or session.info.get("has_writes"):
+            session.commit()
+        else:
+            session.rollback()
     except OperationalError as exc:
         session.rollback()
         _raise_database_busy(exc)
@@ -159,7 +171,18 @@ def _utc_to_local(value):
 
 
 def _date_expr(column):
-    return func.date(column)
+    return func.date(column, "localtime")
+
+
+def _local_date_label(value):
+    local_value = _utc_to_local(value)
+    return local_value[:10] if local_value else ""
+
+
+def _local_hour_label(value):
+    local_value = _utc_to_local(value)
+    hour = local_value[11:13] if local_value else "00"
+    return f"{hour}:00"
 
 
 class User(Base):
@@ -329,6 +352,7 @@ class Expense(Base):
     __tablename__ = "expenses"
     id = Column(Integer, primary_key=True)
     category_id = Column(Integer, ForeignKey("expense_categories.id"))
+    user_id = Column(Integer, ForeignKey("users.id"))
     amount = Column(Float, nullable=False)
     currency_code = Column(String, default="UZS")
     description = Column(String)
@@ -434,6 +458,9 @@ def _add_missing_columns():
         },
         "inventory_check_items": {
             "checked_quantity": "ALTER TABLE inventory_check_items ADD COLUMN checked_quantity INTEGER DEFAULT 0",
+        },
+        "expenses": {
+            "user_id": "ALTER TABLE expenses ADD COLUMN user_id INTEGER REFERENCES users(id)",
         },
     }
     with engine.begin() as conn:
@@ -1103,6 +1130,14 @@ def get_product_sales_archive(query=""):
         rows = session.execute(stmt.order_by(Sale.created_at.desc(), SaleItem.id.desc()).limit(1000)).all()
         result = []
         for item, sale, product, cashier_name, customer_name, customer_phone in rows:
+            active_quantity = item.quantity - (item.returned_quantity or 0)
+            active_subtotal = active_quantity * (item.price or 0)
+            active_sale_total = session.scalar(
+                select(func.coalesce(func.sum((SaleItem.quantity - func.coalesce(SaleItem.returned_quantity, 0)) * SaleItem.price), 0))
+                .where(SaleItem.sale_id == sale.id)
+            ) or 0
+            item_discount = (sale.discount or 0) * (active_subtotal / active_sale_total) if active_sale_total > 0 else 0
+            item_total_after_discount = max(0, active_subtotal - item_discount)
             result.append(Row(dict(
                 sale_item_id=item.id,
                 sale_id=item.sale_id,
@@ -1115,7 +1150,10 @@ def get_product_sales_archive(query=""):
                 returned_quantity=item.returned_quantity or 0,
                 price=item.price,
                 subtotal=item.subtotal,
+                active_subtotal=active_subtotal,
                 discount=sale.discount,
+                item_discount=item_discount,
+                item_total_after_discount=item_total_after_discount,
                 payment_method=sale.payment_method,
                 currency_code=sale.currency_code,
                 exchange_rate=sale.exchange_rate,
@@ -1125,6 +1163,158 @@ def get_product_sales_archive(query=""):
                 customer_phone=sale.customer_phone or customer_phone,
             )))
         return result
+
+
+def get_finance_rows(start_date, end_date):
+    with session_scope() as session:
+        templates = session.scalars(select(ProductTemplate).order_by(ProductTemplate.name)).all()
+        products = session.scalars(select(Product).where(Product.is_deleted == 0).order_by(Product.name)).all()
+        first_date = _first_activity_date_in_session(session)
+        labels = []
+        current = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+        if first_date:
+            first = datetime.strptime(first_date, "%Y-%m-%d").date()
+            if end < first:
+                return Row(dict(
+                    templates=[Row(dict(id=template.id, name=template.name)) for template in templates],
+                    rows=[],
+                ))
+            current = max(current, first)
+        while current <= end:
+            labels.append(current.isoformat())
+            current = current + timedelta(days=1)
+
+        if not labels:
+            return Row(dict(
+                templates=[Row(dict(id=template.id, name=template.name)) for template in templates],
+                rows=[],
+            ))
+
+        product_ids = [product.id for product in products]
+        movements_by_product = {product.id: {} for product in products}
+        activity_labels = set()
+        if product_ids:
+            movement_rows = session.execute(
+                select(
+                    StockMovement.product_id,
+                    _date_expr(StockMovement.created_at).label("label"),
+                    func.coalesce(func.sum(StockMovement.quantity), 0).label("quantity"),
+                )
+                .where(
+                    StockMovement.product_id.in_(product_ids),
+                    _date_expr(StockMovement.created_at) > labels[0],
+                )
+                .group_by(StockMovement.product_id, _date_expr(StockMovement.created_at))
+            ).all()
+            for product_id, label, quantity in movement_rows:
+                movements_by_product.setdefault(product_id, {})[label] = quantity or 0
+                if labels[0] <= label <= labels[-1]:
+                    activity_labels.add(label)
+
+        future_by_product = {}
+        if product_ids:
+            future_rows = session.execute(
+                select(
+                    StockMovement.product_id,
+                    func.coalesce(func.sum(StockMovement.quantity), 0).label("quantity"),
+                )
+                .where(
+                    StockMovement.product_id.in_(product_ids),
+                    _date_expr(StockMovement.created_at) > labels[-1],
+                )
+                .group_by(StockMovement.product_id)
+            ).all()
+            future_by_product = {product_id: quantity or 0 for product_id, quantity in future_rows}
+
+        supplier_debt_rows = session.execute(
+            select(
+                _date_expr(SupplierDebtMovement.created_at).label("label"),
+                SupplierDebtMovement.type,
+                func.coalesce(func.sum(SupplierDebtMovement.amount * func.coalesce(Currency.rate_to_uzs, 1)), 0).label("amount"),
+            )
+            .join(Supplier, Supplier.id == SupplierDebtMovement.supplier_id)
+            .outerjoin(Currency, Currency.code == Supplier.debt_currency)
+            .where(_date_expr(SupplierDebtMovement.created_at).between(labels[0], labels[-1]))
+            .group_by(_date_expr(SupplierDebtMovement.created_at), SupplierDebtMovement.type)
+        ).all()
+        debtor_debt_rows = session.execute(
+            select(
+                _date_expr(DebtorDebtMovement.created_at).label("label"),
+                DebtorDebtMovement.type,
+                func.coalesce(func.sum(DebtorDebtMovement.amount * func.coalesce(Currency.rate_to_uzs, 1)), 0).label("amount"),
+            )
+            .join(Debtor, Debtor.id == DebtorDebtMovement.debtor_id)
+            .outerjoin(Currency, Currency.code == Debtor.debt_currency)
+            .where(_date_expr(DebtorDebtMovement.created_at).between(labels[0], labels[-1]))
+            .group_by(_date_expr(DebtorDebtMovement.created_at), DebtorDebtMovement.type)
+        ).all()
+        debt_by_label = {}
+        for label, movement_type, amount in supplier_debt_rows:
+            change = amount if movement_type == "qarz" else -amount
+            debt_by_label[label] = debt_by_label.get(label, 0) + change
+            activity_labels.add(label)
+        for label, movement_type, amount in debtor_debt_rows:
+            change = amount if movement_type == "qarz" else -amount
+            debt_by_label[label] = debt_by_label.get(label, 0) - change
+            activity_labels.add(label)
+
+        rows_by_label = {}
+        for label in reversed(labels):
+            row = {
+                "label": label,
+                "active": 1 if label in activity_labels else 0,
+                "cash": 0,
+                "card": 0,
+                "other": 0,
+                "debt": debt_by_label.get(label, 0),
+                "total": 0,
+                "templates": {template.id: 0 for template in templates},
+            }
+            for product in products:
+                created_label = _local_date_label(product.created_at)
+                if created_label and created_label > label:
+                    continue
+                if created_label == label:
+                    row["active"] = 1
+                future_quantity = future_by_product.get(product.id, 0)
+                day_stock = max((product.stock or 0) - future_quantity, 0)
+                value = day_stock * (product.price or 0)
+                if product.template_id in row["templates"]:
+                    row["templates"][product.template_id] += value
+                else:
+                    row["other"] += value
+            row["total"] = sum(row["templates"].values()) + row["other"]
+            rows_by_label[label] = Row(row)
+            for product_id, quantity in movements_by_product.items():
+                future_by_product[product_id] = future_by_product.get(product_id, 0) + (quantity.get(label, 0) or 0)
+
+        return Row(dict(
+            templates=[Row(dict(id=template.id, name=template.name)) for template in templates],
+            rows=[rows_by_label[label] for label in labels],
+        ))
+
+def _first_activity_date_in_session(session):
+    date_columns = [
+        Product.created_at,
+        StockMovement.created_at,
+        Sale.created_at,
+        Expense.created_at,
+        SupplierDebtMovement.created_at,
+        DebtorDebtMovement.created_at,
+        LoginLog.logged_at,
+    ]
+    dates = []
+    for column in date_columns:
+        value = session.scalar(select(func.min(_date_expr(column))))
+        if value:
+            dates.append(value)
+    return min(dates) if dates else None
+
+
+def get_first_activity_date():
+    with session_scope() as session:
+        return _first_activity_date_in_session(session)
 
 
 def clear_sales_history():
@@ -1146,22 +1336,28 @@ def return_sale_item(sale_item_id, quantity, note=""):
             raise AppError(f"Qaytarish miqdori ko'p. Qaytarish mumkin: {available}.")
         refund = item.price * quantity
         rate = sale.exchange_rate or 1
+        active_sale_total = session.scalar(
+            select(func.coalesce(func.sum((SaleItem.quantity - func.coalesce(SaleItem.returned_quantity, 0)) * SaleItem.price), 0))
+            .where(SaleItem.sale_id == item.sale_id)
+        ) or 0
+        discount_refund = (sale.discount or 0) * (refund / active_sale_total) if active_sale_total > 0 else 0
+        net_refund = max(0, refund - discount_refund)
         item.returned_quantity = (item.returned_quantity or 0) + quantity
         product = session.get(Product, item.product_id)
         product.stock = (product.stock or 0) + quantity
         product.is_deleted = 0
         session.add(StockMovement(product_id=item.product_id, type="qaytarish", quantity=quantity, note=note or f"Sotuv #{item.sale_id} qaytarildi"))
         sale.total = max((sale.total or 0) - refund, 0)
-        sale.discount = min(sale.discount or 0, max((sale.total or 0) - refund, 0))
+        sale.discount = min(max((sale.discount or 0) - discount_refund, 0), sale.total or 0)
         if sale.payment_method != "qarz":
-            sale.paid = max((sale.paid or 0) - refund, 0)
-            sale.paid_original = max((sale.paid_original or 0) - refund / rate, 0)
+            sale.paid = max((sale.paid or 0) - net_refund, 0)
+            sale.paid_original = max((sale.paid_original or 0) - net_refund / rate, 0)
         if sale.customer_id:
             customer = session.get(Customer, sale.customer_id)
             if customer:
-                customer.total_purchases = max((customer.total_purchases or 0) - refund, 0)
+                customer.total_purchases = max((customer.total_purchases or 0) - net_refund, 0)
                 if sale.payment_method == "qarz":
-                    customer.balance = max((customer.balance or 0) - refund, 0)
+                    customer.balance = max((customer.balance or 0) - net_refund, 0)
 
 
 def _sale_cost(session, sale_id):
@@ -1258,7 +1454,23 @@ def get_overall_period_series(start_date, end_date):
         sales = session.scalars(select(Sale).where(_date_expr(Sale.created_at).between(start_date, end_date))).all()
         grouped = {}
         for sale in sales:
-            label = sale.created_at[:10]
+            label = _local_date_label(sale.created_at)
+            row = grouped.setdefault(label, Row(dict(label=label, sales_count=0, product_count=0, revenue=0, profit=0)))
+            revenue = _sale_revenue(sale)
+            if revenue > 0:
+                row["sales_count"] += 1
+            row["product_count"] += session.scalar(select(func.coalesce(func.sum(SaleItem.quantity - func.coalesce(SaleItem.returned_quantity, 0)), 0)).where(SaleItem.sale_id == sale.id)) or 0
+            row["revenue"] += revenue
+            row["profit"] += revenue - _sale_cost(session, sale.id)
+        return [grouped[key] for key in sorted(grouped)]
+
+
+def get_overall_day_hourly_series(date_str):
+    with session_scope() as session:
+        sales = session.scalars(select(Sale).where(_date_expr(Sale.created_at) == date_str)).all()
+        grouped = {}
+        for sale in sales:
+            label = _local_hour_label(sale.created_at)
             row = grouped.setdefault(label, Row(dict(label=label, sales_count=0, product_count=0, revenue=0, profit=0)))
             revenue = _sale_revenue(sale)
             if revenue > 0:
@@ -1313,7 +1525,26 @@ def get_entity_period_series(entity_type, entity_id, start_date, end_date):
         sales = session.scalars(select(Sale).where(and_(column == entity_id, _date_expr(Sale.created_at).between(start_date, end_date)))).all()
         grouped = {}
         for sale in sales:
-            label = sale.created_at[:10]
+            label = _local_date_label(sale.created_at)
+            row = grouped.setdefault(label, Row(dict(label=label, sales_count=0, product_count=0, revenue=0, profit=0)))
+            revenue = _sale_revenue(sale)
+            if revenue > 0:
+                row["sales_count"] += 1
+            row["product_count"] += session.scalar(select(func.coalesce(func.sum(SaleItem.quantity - func.coalesce(SaleItem.returned_quantity, 0)), 0)).where(SaleItem.sale_id == sale.id)) or 0
+            row["revenue"] += revenue
+            row["profit"] += revenue - _sale_cost(session, sale.id)
+        return [grouped[key] for key in sorted(grouped)]
+
+
+def get_entity_day_hourly_series(entity_type, entity_id, date_str):
+    if entity_type not in ("cashier", "customer"):
+        raise AppError("Hisobot turi noto'g'ri.")
+    column = Sale.cashier_id if entity_type == "cashier" else Sale.customer_id
+    with session_scope() as session:
+        sales = session.scalars(select(Sale).where(and_(column == entity_id, _date_expr(Sale.created_at) == date_str))).all()
+        grouped = {}
+        for sale in sales:
+            label = _local_hour_label(sale.created_at)
             row = grouped.setdefault(label, Row(dict(label=label, sales_count=0, product_count=0, revenue=0, profit=0)))
             revenue = _sale_revenue(sale)
             if revenue > 0:
@@ -1519,30 +1750,33 @@ def delete_expense_category(category_id):
 def get_expenses():
     with session_scope() as session:
         rows = session.execute(
-            select(Expense, ExpenseCategory.name)
+            select(Expense, ExpenseCategory.name, User.username)
             .outerjoin(ExpenseCategory, ExpenseCategory.id == Expense.category_id)
+            .outerjoin(User, User.id == Expense.user_id)
             .order_by(Expense.created_at.desc(), Expense.id.desc())
         ).all()
-        return [_row_from_model(expense, category_name=name) for expense, name in rows]
+        return [_row_from_model(expense, category_name=name, username=username) for expense, name, username in rows]
 
 
-def add_expense(category_id, amount, currency_code, description):
+def add_expense(category_id, amount, currency_code, description, user_id=None):
     if amount <= 0:
         raise AppError("Harajat summasi 0 dan katta bo'lishi kerak.")
     with session_scope() as session:
-        row = Expense(category_id=category_id, amount=amount, currency_code=currency_code, description=description)
+        row = Expense(category_id=category_id, amount=amount, currency_code=currency_code, description=description, user_id=user_id)
         session.add(row)
         session.flush()
         return row.id
 
 
-def update_expense(expense_id, category_id, amount, currency_code, description):
+def update_expense(expense_id, category_id, amount, currency_code, description, user_id=None):
     if amount <= 0:
         raise AppError("Harajat summasi 0 dan katta bo'lishi kerak.")
     with session_scope() as session:
         row = session.get(Expense, expense_id)
         if row:
             row.category_id, row.amount, row.currency_code, row.description = category_id, amount, currency_code, description
+            if user_id is not None:
+                row.user_id = user_id
 
 
 def delete_expense(expense_id):
@@ -1552,7 +1786,19 @@ def delete_expense(expense_id):
             session.delete(row)
 
 
-def get_expense_report(start_date, end_date, category_id=None):
+def _first_admin_id(session):
+    return session.scalar(select(User.id).where(User.role == "admin").order_by(User.id))
+
+
+def _apply_expense_owner_filter(stmt, session, user_id=None, include_unassigned=False):
+    if not user_id:
+        return stmt
+    if include_unassigned and user_id == _first_admin_id(session):
+        return stmt.where(or_(Expense.user_id == user_id, Expense.user_id.is_(None)))
+    return stmt.where(Expense.user_id == user_id)
+
+
+def get_expense_report(start_date, end_date, category_id=None, user_id=None, include_unassigned=False):
     stmt = (
         select(_date_expr(Expense.created_at).label("label"), Expense.currency_code, func.coalesce(func.sum(Expense.amount), 0).label("amount"))
         .where(_date_expr(Expense.created_at).between(start_date, end_date))
@@ -1562,6 +1808,22 @@ def get_expense_report(start_date, end_date, category_id=None):
     if category_id:
         stmt = stmt.where(Expense.category_id == category_id)
     with session_scope() as session:
+        stmt = _apply_expense_owner_filter(stmt, session, user_id, include_unassigned)
+        return [Row(dict(row._mapping)) for row in session.execute(stmt)]
+
+
+def get_expense_hourly_report(date_str, category_id=None, user_id=None, include_unassigned=False):
+    hour_label = func.substr(func.datetime(Expense.created_at, "localtime"), 12, 2).op("||")(":00").label("label")
+    stmt = (
+        select(hour_label, Expense.currency_code, func.coalesce(func.sum(Expense.amount), 0).label("amount"))
+        .where(_date_expr(Expense.created_at) == date_str)
+        .group_by(hour_label, Expense.currency_code)
+        .order_by(hour_label)
+    )
+    if category_id:
+        stmt = stmt.where(Expense.category_id == category_id)
+    with session_scope() as session:
+        stmt = _apply_expense_owner_filter(stmt, session, user_id, include_unassigned)
         return [Row(dict(row._mapping)) for row in session.execute(stmt)]
 
 

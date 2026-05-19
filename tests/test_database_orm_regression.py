@@ -260,6 +260,51 @@ class DatabaseOrmRegressionTest(unittest.TestCase):
         db.clear_sales_history()
         self.assertEqual(db.get_product_sales_archive(), [])
 
+    def test_discount_archive_stays_proportional_after_return(self):
+        admin = db.authenticate("admin", "admin123")
+        p1 = db.add_product({
+            "barcode": "DISC1",
+            "name": "Discount 1",
+            "template_id": None,
+            "supplier_id": None,
+            "category_id": None,
+            "price": 200,
+            "cost": 100,
+            "stock": 5,
+            "unit": "dona",
+        })
+        p2 = db.add_product({
+            "barcode": "DISC2",
+            "name": "Discount 2",
+            "template_id": None,
+            "supplier_id": None,
+            "category_id": None,
+            "price": 300,
+            "cost": 150,
+            "stock": 5,
+            "unit": "dona",
+        })
+        db.create_sale(
+            None,
+            admin["id"],
+            [
+                {"product_id": p1, "quantity": 1, "price": 200, "subtotal": 200},
+                {"product_id": p2, "quantity": 1, "price": 300, "subtotal": 300},
+            ],
+            500,
+            20,
+            480,
+            "naqd",
+        )
+        rows = {row["barcode"]: row for row in db.get_product_sales_archive()}
+        self.assertAlmostEqual(rows["DISC1"]["item_discount"], 8)
+        self.assertAlmostEqual(rows["DISC2"]["item_discount"], 12)
+        db.return_sale_item(rows["DISC2"]["sale_item_id"], 1, "return")
+        rows = {row["barcode"]: row for row in db.get_product_sales_archive()}
+        self.assertNotIn("DISC2", rows)
+        self.assertAlmostEqual(rows["DISC1"]["item_discount"], 8)
+        self.assertAlmostEqual(rows["DISC1"]["item_total_after_discount"], 192)
+
     def test_suppliers_debtors_and_expenses(self):
         supplier_id = db.add_supplier("Supplier", "1", "note", "USD")
         db.update_supplier(supplier_id, "Supplier 2", "2", "note2", "EUR")

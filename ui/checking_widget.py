@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 import database as db
+from ui.async_loader import AsyncDataLoader, make_progress_bar
 from ui.i18n import set_language, t
 
 
@@ -12,6 +13,7 @@ class CheckingWidget(QWidget):
         super().__init__()
         self.user = user
         self.session = None
+        self._async_loader = None
         self._build_ui()
         self.load_data()
 
@@ -19,6 +21,9 @@ class CheckingWidget(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
+        self.progress_bar = make_progress_bar()
+        layout.addWidget(self.progress_bar)
+        self._async_loader = AsyncDataLoader(self, self.progress_bar)
 
         toolbar = QHBoxLayout()
         self.status_lbl = QLabel("Checking boshlanmagan")
@@ -124,7 +129,25 @@ class CheckingWidget(QWidget):
         return table
 
     def load_data(self):
-        self.session = db.get_active_inventory_check()
+        if self.isVisible():
+            self._async_loader.start(self._fetch_checking_data, self._apply_loaded_data)
+            return
+        self._apply_loaded_data(self._fetch_checking_data())
+
+    def _fetch_checking_data(self):
+        session = db.get_active_inventory_check()
+        if not session:
+            return {"session": None, "counts": None, "checked": [], "unchecked": []}
+        session_id = session["id"]
+        return {
+            "session": session,
+            "counts": db.get_inventory_check_counts(session_id),
+            "checked": db.get_inventory_check_items(session_id, True),
+            "unchecked": db.get_inventory_check_items(session_id, False),
+        }
+
+    def _apply_loaded_data(self, data):
+        self.session = data["session"]
         active = bool(self.session)
         self.start_btn.setEnabled(not active)
         self.finish_btn.setEnabled(active)
@@ -132,7 +155,7 @@ class CheckingWidget(QWidget):
         self.qty_spin.setEnabled(active)
         self.scan_btn.setEnabled(active)
         if active:
-            counts = db.get_inventory_check_counts(self.session["id"])
+            counts = data["counts"]
             total = counts["total"] or 0
             checked = counts["checked_count"] or 0
             unchecked = counts["unchecked_count"] or 0
@@ -141,8 +164,8 @@ class CheckingWidget(QWidget):
                 f"Checking #{self.session['id']} | Jami: {total} tur | "
                 f"Tekshirildi: {checked} tur | Qoldi: {unchecked} tur, {unchecked_quantity} ta"
             )
-            self._fill_table(self.checked_table, db.get_inventory_check_items(self.session["id"], True), True)
-            self._fill_table(self.unchecked_table, db.get_inventory_check_items(self.session["id"], False), False)
+            self._fill_table(self.checked_table, data["checked"], True)
+            self._fill_table(self.unchecked_table, data["unchecked"], False)
             self.barcode_edit.setFocus()
         else:
             self.status_lbl.setText("Checking boshlanmagan")
