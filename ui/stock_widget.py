@@ -14,6 +14,9 @@ class StockWidget(QWidget):
         super().__init__()
         self._async_loader = None
         self._search_timer = None
+        self._render_timer = None
+        self._render_products = []
+        self._render_index = 0
         self._build_ui()
 
     def _build_ui(self):
@@ -27,6 +30,8 @@ class StockWidget(QWidget):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(250)
         self._search_timer.timeout.connect(self.load_data)
+        self._render_timer = QTimer(self)
+        self._render_timer.timeout.connect(self._render_stock_chunk)
 
         toolbar = QHBoxLayout()
         self.search_edit = QLineEdit()
@@ -103,8 +108,26 @@ class StockWidget(QWidget):
             products = [product for product in products if product["template_id"] == template_filter]
         self._stats_counts = (len(products), sum(product["stock"] or 0 for product in products))
         self._update_stats_label()
+        self._render_products = list(products)
+        self._render_index = 0
         self.table.setRowCount(0)
-        for row, product in enumerate(products):
+        self.table.setUpdatesEnabled(False)
+        if self.progress_bar:
+            self.progress_bar.setVisible(True)
+        self._render_timer.start(0)
+
+    def _render_stock_chunk(self):
+        if not self._render_products and self._render_index == 0:
+            self._render_timer.stop()
+            self.table.setUpdatesEnabled(True)
+            set_language(self, self.property("app_language") or "uz")
+            if self.progress_bar:
+                QTimer.singleShot(150, lambda: self.progress_bar.setVisible(False))
+            return
+        batch_size = 30
+        end = min(self._render_index + batch_size, len(self._render_products))
+        for row in range(self._render_index, end):
+            product = self._render_products[row]
             self.table.insertRow(row)
             name_item = QTableWidgetItem(product["name"])
             name_item.setData(Qt.ItemDataRole.UserRole, dict(product))
@@ -128,7 +151,13 @@ class StockWidget(QWidget):
             actions_layout.addStretch()
             self.table.setCellWidget(row, 2, actions_widget)
             self.table.setRowHeight(row, 56)
-        set_language(self, self.property("app_language") or "uz")
+        self._render_index = end
+        if self._render_index >= len(self._render_products):
+            self._render_timer.stop()
+            self.table.setUpdatesEnabled(True)
+            set_language(self, self.property("app_language") or "uz")
+            if self.progress_bar:
+                QTimer.singleShot(150, lambda: self.progress_bar.setVisible(False))
 
     def _queue_search(self, *_args):
         self._search_timer.start()

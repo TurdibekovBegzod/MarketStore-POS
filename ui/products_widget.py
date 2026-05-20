@@ -1193,6 +1193,7 @@ class ProductsWidget(QWidget):
         self.user = user
         self._async_loader = None
         self._search_timer = None
+        self._render_generation = 0
         self._build_ui()
 
     def _build_ui(self):
@@ -1484,6 +1485,7 @@ class ProductsWidget(QWidget):
         self._load_supplier_filter(data["suppliers"])
         self._load_template_filter(data["templates"])
         self._load_display_currency_combo(data["currencies"])
+        self._currency_rates = {currency["code"]: (currency.get("rate_to_uzs") or 1) for currency in data["currencies"]}
         products = data["products"]
         products = self._apply_product_filters(products)
         sold_rows = self._apply_product_filters(data["sold_rows"])
@@ -1494,9 +1496,16 @@ class ProductsWidget(QWidget):
         self._stats_counts = (len(available), len(processing), sold_count)
         self._update_stats_label()
 
-        self._fill_products_table(self.table, available, "available")
-        self._fill_products_table(self.process_table, processing, "process")
-        self._fill_sold_table(sold_rows)
+        current_table = self.tabs.currentWidget() if hasattr(self, "tabs") else self.table
+        self.table.setRowCount(0)
+        self.process_table.setRowCount(0)
+        self.sold_table.setRowCount(0)
+        if current_table is self.process_table:
+            self._fill_products_table(self.process_table, processing, "process")
+        elif current_table is self.sold_table:
+            self._fill_sold_table(sold_rows)
+        else:
+            self._fill_products_table(self.table, available, "available")
         set_language(self, self.property("app_language") or "uz")
 
     def _update_stats_label(self):
@@ -1533,7 +1542,33 @@ class ProductsWidget(QWidget):
 
     def _fill_products_table(self, table, products, mode):
         table.setRowCount(0)
-        for row, p in enumerate(products):
+        table.setUpdatesEnabled(False)
+        rows = list(products)
+        state = {"row": 0}
+        self._render_generation += 1
+        generation = self._render_generation
+        if self.progress_bar:
+            self.progress_bar.setVisible(True)
+
+        def render_chunk():
+            if generation != self._render_generation:
+                return
+            end = min(state["row"] + 8, len(rows))
+            for row in range(state["row"], end):
+                p = rows[row]
+                self._fill_product_table_row(table, row, p, mode)
+            state["row"] = end
+            if state["row"] < len(rows):
+                QTimer.singleShot(0, render_chunk)
+                return
+            table.setUpdatesEnabled(True)
+            set_language(self, self.property("app_language") or "uz")
+            if self.progress_bar:
+                QTimer.singleShot(150, lambda: self.progress_bar.setVisible(False))
+
+        QTimer.singleShot(0, render_chunk)
+
+    def _fill_product_table_row(self, table, row, p, mode):
             table.insertRow(row)
             name_item = QTableWidgetItem(p["name"])
             name_item.setData(Qt.ItemDataRole.UserRole, dict(p))
@@ -1560,7 +1595,7 @@ class ProductsWidget(QWidget):
             table.setItem(row, 5, stock_item)
             deposit = _row_value(p, "process_deposit", 0) or 0
             deposit_currency = _row_value(p, "process_deposit_currency", "UZS") or "UZS"
-            deposit_rate = (db.get_currency(deposit_currency) or {}).get("rate_to_uzs", 1) or 1
+            deposit_rate = getattr(self, "_currency_rates", {}).get(deposit_currency, 1) or 1
             deposit_text = self._money_display(deposit * deposit_rate) if mode == "process" else ""
             table.setItem(row, 6, QTableWidgetItem(deposit_text))
             action_column = 7
@@ -1646,7 +1681,32 @@ class ProductsWidget(QWidget):
 
     def _fill_sold_table(self, rows):
         self.sold_table.setRowCount(0)
-        for row_index, archive_row in enumerate(rows):
+        self.sold_table.setUpdatesEnabled(False)
+        rows = list(rows)
+        state = {"row": 0}
+        self._render_generation += 1
+        generation = self._render_generation
+        if self.progress_bar:
+            self.progress_bar.setVisible(True)
+
+        def render_chunk():
+            if generation != self._render_generation:
+                return
+            end = min(state["row"] + 20, len(rows))
+            for row_index in range(state["row"], end):
+                self._fill_sold_table_row(row_index, rows[row_index])
+            state["row"] = end
+            if state["row"] < len(rows):
+                QTimer.singleShot(0, render_chunk)
+                return
+            self.sold_table.setUpdatesEnabled(True)
+            set_language(self, self.property("app_language") or "uz")
+            if self.progress_bar:
+                QTimer.singleShot(150, lambda: self.progress_bar.setVisible(False))
+
+        QTimer.singleShot(0, render_chunk)
+
+    def _fill_sold_table_row(self, row_index, archive_row):
             self.sold_table.insertRow(row_index)
             data = dict(archive_row)
             values = [

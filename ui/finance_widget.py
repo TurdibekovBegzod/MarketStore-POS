@@ -1,5 +1,3 @@
-import json
-import os
 from datetime import date, timedelta
 
 from PyQt6.QtCore import Qt, QDate, QPointF, QTimer, QObject, QThread, pyqtSignal
@@ -198,7 +196,7 @@ class FinanceMoneyDialog(QDialog):
             widget.setFixedHeight(34)
             widget.setStyleSheet("border:1px solid #cbd5e1;border-radius:6px;padding:6px 10px;background:white;")
         form.addRow(t("Sana:", self.language), self.date_value_lbl)
-        form.addRow(t("Turi", self.language), self.kind_combo)
+        form.addRow(t("Ustun", self.language), self.kind_combo)
         form.addRow(t("Amal", self.language), self.operation_combo)
         form.addRow(t("Valyuta", self.language), self.currency_combo)
         form.addRow(t("Summa", self.language), self.amount_edit)
@@ -259,7 +257,8 @@ class FinanceWidget(QWidget):
         self._load_worker = None
         self._pending_load = False
         self.current_day = date.today()
-        self.manual_values = self._load_manual_values()
+        db.migrate_finance_manual_json(MANUAL_FINANCE_PATH)
+        self.manual_values = db.get_finance_manual_values()
         self._build_ui()
         self.midnight_timer = QTimer(self)
         self.midnight_timer.timeout.connect(self._refresh_if_day_changed)
@@ -356,6 +355,7 @@ class FinanceWidget(QWidget):
 
     def load_data(self):
         start, end = self._date_range()
+        self.manual_values = db.get_finance_manual_values()
         if not self.isVisible():
             self._render_finance_data(start, end, db.get_finance_rows(start.isoformat(), end.isoformat()))
             return
@@ -407,13 +407,13 @@ class FinanceWidget(QWidget):
         self.table.setHorizontalHeaderLabels([t(header, self.language) for header in headers])
 
         chart_rows = self._display_rows(finance["rows"], template_columns, include_empty=True)
-        rows = [row for row in chart_rows if self._row_has_activity(row)]
+        rows = [row for row in chart_rows if self._show_table_row(row)]
 
         self.table.setRowCount(len(rows))
         for row_index, row in enumerate(rows):
             cash = self._manual_period_total(row["label"], "cash")
             card = self._manual_period_total(row["label"], "card")
-            other = (row["other"] or 0) + self._manual_period_total(row["label"], "other")
+            other = self._manual_period_total(row["label"], "other")
             debt = row.get("debt", 0) or 0
             template_total = sum(row["templates"].get(template["id"], 0) for template in template_columns)
             total = self._row_total(row, template_columns)
@@ -442,7 +442,10 @@ class FinanceWidget(QWidget):
         self._loading = False
         self.chart.setProperty("app_language", self.language)
         self.chart.set_points(
-            [(self._display_date(row["label"], short=True), self._display_value(self._row_total(row, template_columns)) if self._row_has_activity(row) else 0) for row in chart_rows],
+            [
+                (self._display_date(row["label"], short=True), self._finance_chart_value(row, template_columns))
+                for row in chart_rows
+            ],
             t("Summa grafigi", self.language),
         )
         set_language(self, self.language)
@@ -594,20 +597,6 @@ class FinanceWidget(QWidget):
     def _number(self, value):
         return f"{value or 0:,.0f}"
 
-    def _load_manual_values(self):
-        if not os.path.exists(MANUAL_FINANCE_PATH):
-            return {}
-        try:
-            with open(MANUAL_FINANCE_PATH, "r", encoding="utf-8") as file:
-                data = json.load(file)
-            return data if isinstance(data, dict) else {}
-        except (OSError, json.JSONDecodeError):
-            return {}
-
-    def _save_manual_values(self):
-        with open(MANUAL_FINANCE_PATH, "w", encoding="utf-8") as file:
-            json.dump(self.manual_values, file, ensure_ascii=False, indent=2)
-
     def _load_display_currencies(self):
         self.currency_combo.clear()
         currencies = [dict(currency) for currency in db.get_currencies()]
@@ -676,8 +665,10 @@ class FinanceWidget(QWidget):
                 "card": 0,
                 "other": 0,
                 "inventory_other_total": 0,
+                "manual_cash": 0,
+                "manual_card": 0,
+                "manual_other": 0,
                 "debt": 0,
-                "debt_total": 0,
                 "total_avg": 0,
                 "total_sum": 0,
                 "total": 0,
@@ -688,20 +679,31 @@ class FinanceWidget(QWidget):
             })
             has_value = self._row_has_activity(row)
             item["active"] = 1 if item["active"] or has_value else 0
+            item["manual_cash"] += self._manual_period_total(row["label"], "cash")
+            item["manual_card"] += self._manual_period_total(row["label"], "card")
+            item["manual_other"] += self._manual_period_total(row["label"], "other")
             if has_value:
                 item["value_count"] += 1
                 item["inventory_other_total"] += row["other"] or 0
-                item["total_sum"] += self._daily_row_total(row, template_columns)
-            item["debt_total"] += row.get("debt", 0) or 0
+                item["total_sum"] += self._inventory_total(row, template_columns)
+            item["debt"] = row.get("debt", 0) or 0
             for template in template_columns:
                 if has_value:
                     item["template_totals"][template["id"]] += row["templates"].get(template["id"], 0)
         result = [grouped[key] for key in sorted(grouped)]
         for item in result:
             count = item.pop("value_count", 0) or 1
-            item["other"] = item.pop("inventory_other_total", 0) / count
-            item["debt"] = item.pop("debt_total", 0)
-            item["total_avg"] = item.pop("total_sum", 0) / count
+            item["inventory_other_avg"] = item.pop("inventory_other_total", 0) / count
+            item["other"] = item.pop("manual_other", 0)
+            item["cash"] = item.pop("manual_cash", 0)
+            item["card"] = item.pop("manual_card", 0)
+            item["total_avg"] = (
+                item.pop("total_sum", 0) / count
+                + item["cash"]
+                + item["card"]
+                + item["other"]
+                - (item.get("debt", 0) or 0)
+            )
             totals = item.pop("template_totals", {})
             for template in template_columns:
                 item["templates"][template["id"]] = (totals.get(template["id"], 0) or 0) / count
@@ -715,21 +717,52 @@ class FinanceWidget(QWidget):
             return True
         return any(self._manual_period_total(label, kind) for kind in ("cash", "card", "other"))
 
+    def _show_table_row(self, row):
+        if self._row_has_activity(row):
+            return True
+        if (self.period_combo.currentData() or "day") != "day":
+            return False
+        try:
+            return date.fromisoformat(str(row["label"])) <= date.today()
+        except ValueError:
+            return False
+
     def _row_total(self, row, template_columns):
         if "total_avg" in row:
             return row.get("total_avg", 0) or 0
         return self._daily_row_total(row, template_columns)
 
+    def _finance_chart_value(self, row, template_columns):
+        label = str(row["label"])
+        today = date.today()
+        try:
+            if label.startswith("week:"):
+                _, start_text, end_text = label.split(":")
+                row_start = date.fromisoformat(start_text)
+            elif label.startswith("year:"):
+                row_start = date(int(label.split(":", 1)[1]), 1, 1)
+            elif len(label) == 7:
+                row_start = date.fromisoformat(f"{label}-01")
+            else:
+                row_start = date.fromisoformat(label)
+        except ValueError:
+            row_start = today
+        if row_start > today:
+            return 0
+        return self._display_value(self._row_total(row, template_columns))
+
     def _daily_row_total(self, row, template_columns):
-        template_total = sum(row["templates"].get(template["id"], 0) for template in template_columns)
         return (
             self._manual_period_total(row["label"], "cash")
             + self._manual_period_total(row["label"], "card")
             + self._manual_period_total(row["label"], "other")
-            + (row["other"] or 0)
+            + self._inventory_total(row, template_columns)
             - (row.get("debt", 0) or 0)
-            + template_total
         )
+
+    def _inventory_total(self, row, template_columns):
+        template_total = sum(row["templates"].get(template["id"], 0) for template in template_columns)
+        return (row["other"] or 0) + template_total
 
     def _open_money_dialog(self):
         dialog = FinanceMoneyDialog(self)
@@ -746,13 +779,15 @@ class FinanceWidget(QWidget):
                 t("Kamaytirish summasi joriy mablag'dan oshib ketdi.", self.language),
             )
             return
-        day_values = self.manual_values.setdefault(data["date"], {})
-        movements = day_values.setdefault(kind, [])
-        if not isinstance(movements, list):
-            movements = [{"operation": "+", "amount": float(movements or 0), "currency": "UZS", "rate_to_uzs": 1}]
-            day_values[kind] = movements
-        movements.append(data)
-        self._save_manual_values()
+        db.add_finance_manual_movement(
+            data["date"],
+            kind,
+            data["operation"],
+            data["amount"],
+            data["currency"],
+            data["rate_to_uzs"],
+        )
+        self.manual_values = db.get_finance_manual_values()
         start, end = self._date_range()
         movement_date = date.fromisoformat(data["date"])
         if start <= movement_date <= end:

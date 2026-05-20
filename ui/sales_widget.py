@@ -291,6 +291,10 @@ class SalesWidget(QWidget):
         self.cart = []
         self._async_loader = None
         self._search_timer = None
+        self._render_timer = None
+        self._render_products = []
+        self._render_index = 0
+        self._render_generation = 0
         self._build_ui()
         self.load_data()
 
@@ -306,6 +310,8 @@ class SalesWidget(QWidget):
         self._search_timer.setSingleShot(True)
         self._search_timer.setInterval(250)
         self._search_timer.timeout.connect(self._run_product_search)
+        self._render_timer = QTimer(self)
+        self._render_timer.timeout.connect(self._render_product_chunk)
 
         layout = QHBoxLayout()
         layout.setSpacing(16)
@@ -483,8 +489,27 @@ class SalesWidget(QWidget):
         if products is None:
             products = db.search_products(query) if query else db.get_all_products()
 
+        self._render_products = list(products)
+        self._render_index = 0
+        self._render_generation += 1
         self.products_table.setRowCount(0)
-        for row, p in enumerate(products):
+        self.products_table.setUpdatesEnabled(False)
+        if self.progress_bar:
+            self.progress_bar.setVisible(True)
+        self._render_timer.start(0)
+
+    def _render_product_chunk(self):
+        if not self._render_products and self._render_index == 0:
+            self._render_timer.stop()
+            self.products_table.setUpdatesEnabled(True)
+            set_language(self, self.property("app_language") or "uz")
+            if self.progress_bar:
+                QTimer.singleShot(150, lambda: self.progress_bar.setVisible(False))
+            return
+        batch_size = 25
+        end = min(self._render_index + batch_size, len(self._render_products))
+        for row in range(self._render_index, end):
+            p = self._render_products[row]
             self.products_table.insertRow(row)
             self.products_table.setItem(row, 0, QTableWidgetItem(p["name"]))
             self.products_table.setItem(row, 1, QTableWidgetItem(p["barcode"] or ""))
@@ -509,10 +534,14 @@ class SalesWidget(QWidget):
             add_layout.addWidget(add_btn, 0, Qt.AlignmentFlag.AlignCenter)
             self.products_table.setCellWidget(row, 4, add_wrap)
             self.products_table.setRowHeight(row, 44)
-            self.products_table.setRowData(row, p) if hasattr(self.products_table, 'setRowData') else None
-            # Store product id in hidden column via item UserRole
             self.products_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, dict(p))
-        set_language(self, self.property("app_language") or "uz")
+        self._render_index = end
+        if self._render_index >= len(self._render_products):
+            self._render_timer.stop()
+            self.products_table.setUpdatesEnabled(True)
+            set_language(self, self.property("app_language") or "uz")
+            if self.progress_bar:
+                QTimer.singleShot(150, lambda: self.progress_bar.setVisible(False))
 
     def _load_currencies(self, currencies=None):
         current = self.currency_combo.currentData() if hasattr(self, "currency_combo") else None

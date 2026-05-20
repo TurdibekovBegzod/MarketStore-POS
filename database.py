@@ -1,4 +1,6 @@
 import hashlib
+import json
+import os
 import secrets
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -421,6 +423,18 @@ class InventoryCheckItem(Base):
     __table_args__ = (UniqueConstraint("session_id", "product_id"),)
 
 
+class FinanceManualMovement(Base):
+    __tablename__ = "finance_manual_movements"
+    id = Column(Integer, primary_key=True)
+    movement_date = Column(String, nullable=False)
+    kind = Column(String, nullable=False)
+    operation = Column(String, nullable=False, default="+")
+    amount = Column(Float, nullable=False)
+    currency_code = Column(String, default="UZS")
+    rate_to_uzs = Column(Float, default=1)
+    created_at = Column(String, server_default=text("CURRENT_TIMESTAMP"))
+
+
 def _add_missing_columns():
     engine = _get_engine()
     inspector = inspect(engine)
@@ -515,6 +529,7 @@ def init_db():
             session.flush()
             for order, field_name in enumerate(["Brend", "Model", "Rang"]):
                 session.add(ProductTemplateField(template_id=template.id, name=field_name, sort_order=order))
+    migrate_finance_manual_json()
 
 
 def get_app_settings(user_id=None):
@@ -1249,15 +1264,46 @@ def get_finance_rows(start_date, end_date):
             .where(_date_expr(DebtorDebtMovement.created_at).between(labels[0], labels[-1]))
             .group_by(_date_expr(DebtorDebtMovement.created_at), DebtorDebtMovement.type)
         ).all()
-        debt_by_label = {}
+        supplier_opening_rows = session.execute(
+            select(
+                SupplierDebtMovement.type,
+                func.coalesce(func.sum(SupplierDebtMovement.amount * func.coalesce(Currency.rate_to_uzs, 1)), 0).label("amount"),
+            )
+            .join(Supplier, Supplier.id == SupplierDebtMovement.supplier_id)
+            .outerjoin(Currency, Currency.code == Supplier.debt_currency)
+            .where(_date_expr(SupplierDebtMovement.created_at) < labels[0])
+            .group_by(SupplierDebtMovement.type)
+        ).all()
+        debtor_opening_rows = session.execute(
+            select(
+                DebtorDebtMovement.type,
+                func.coalesce(func.sum(DebtorDebtMovement.amount * func.coalesce(Currency.rate_to_uzs, 1)), 0).label("amount"),
+            )
+            .join(Debtor, Debtor.id == DebtorDebtMovement.debtor_id)
+            .outerjoin(Currency, Currency.code == Debtor.debt_currency)
+            .where(_date_expr(DebtorDebtMovement.created_at) < labels[0])
+            .group_by(DebtorDebtMovement.type)
+        ).all()
+        debt_delta_by_label = {}
+        opening_debt = 0
+        for movement_type, amount in supplier_opening_rows:
+            opening_debt += amount if movement_type == "qarz" else -amount
+        for movement_type, amount in debtor_opening_rows:
+            change = amount if movement_type == "qarz" else -amount
+            opening_debt -= change
         for label, movement_type, amount in supplier_debt_rows:
             change = amount if movement_type == "qarz" else -amount
-            debt_by_label[label] = debt_by_label.get(label, 0) + change
+            debt_delta_by_label[label] = debt_delta_by_label.get(label, 0) + change
             activity_labels.add(label)
         for label, movement_type, amount in debtor_debt_rows:
             change = amount if movement_type == "qarz" else -amount
-            debt_by_label[label] = debt_by_label.get(label, 0) - change
+            debt_delta_by_label[label] = debt_delta_by_label.get(label, 0) - change
             activity_labels.add(label)
+        debt_by_label = {}
+        running_debt = opening_debt
+        for label in labels:
+            running_debt += debt_delta_by_label.get(label, 0)
+            debt_by_label[label] = running_debt
 
         rows_by_label = {}
         for label in reversed(labels):
@@ -1294,12 +1340,133 @@ def get_finance_rows(start_date, end_date):
             rows=[rows_by_label[label] for label in labels],
         ))
 
+
+def add_finance_manual_movement(movement_date, kind, operation, amount, currency_code="UZS", rate_to_uzs=1):
+    if kind not in ("cash", "card", "other"):
+        raise AppError("Mablag' turi noto'g'ri.")
+    if operation not in ("+", "-"):
+        raise AppError("Amal noto'g'ri.")
+    if amount <= 0:
+        raise AppError("Summa 0 dan katta bo'lishi kerak.")
+    with session_scope() as session:
+        row = FinanceManualMovement(
+            movement_date=movement_date,
+            kind=kind,
+            operation=operation,
+            amount=amount,
+            currency_code=currency_code or "UZS",
+            rate_to_uzs=rate_to_uzs or 1,
+        )
+        session.add(row)
+        session.flush()
+        return row.id
+
+
+def get_finance_manual_movements(start_date=None, end_date=None):
+    stmt = select(FinanceManualMovement).order_by(FinanceManualMovement.movement_date, FinanceManualMovement.id)
+    if start_date:
+        stmt = stmt.where(FinanceManualMovement.movement_date >= start_date)
+    if end_date:
+        stmt = stmt.where(FinanceManualMovement.movement_date <= end_date)
+    with session_scope() as session:
+        return _rows_from_models(session.scalars(stmt).all())
+
+
+def get_finance_manual_values(start_date=None, end_date=None):
+    values = {}
+    for row in get_finance_manual_movements(start_date, end_date):
+        day_values = values.setdefault(row["movement_date"], {})
+        movements = day_values.setdefault(row["kind"], [])
+        movements.append({
+            "date": row["movement_date"],
+            "kind": row["kind"],
+            "operation": row["operation"] or "+",
+            "amount": row["amount"] or 0,
+            "currency": row["currency_code"] or "UZS",
+            "rate_to_uzs": row["rate_to_uzs"] or 1,
+        })
+    return values
+
+
+def get_finance_manual_total(movement_date, kind):
+    total = 0
+    for day_values in get_finance_manual_values(movement_date, movement_date).values():
+        for movement in day_values.get(kind, []):
+            sign = -1 if movement.get("operation") == "-" else 1
+            total += sign * (movement.get("amount", 0) or 0) * (movement.get("rate_to_uzs", 1) or 1)
+    return total
+
+
+def migrate_finance_manual_json(path="finance_manual.json"):
+    if not os.path.exists(path):
+        return False
+    with session_scope() as session:
+        if session.scalar(select(func.count(FinanceManualMovement.id))) > 0:
+            try:
+                os.replace(path, f"{path}.migrated")
+            except OSError:
+                pass
+            return False
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            data = json.load(file)
+    except (OSError, json.JSONDecodeError):
+        return False
+    if not isinstance(data, dict):
+        return False
+
+    migrated = 0
+    with session_scope() as session:
+        for movement_date, day_values in data.items():
+            if not isinstance(day_values, dict):
+                continue
+            for kind, value in day_values.items():
+                if kind not in ("cash", "card", "other"):
+                    continue
+                items = value if isinstance(value, list) else [value]
+                for item in items:
+                    if isinstance(item, dict):
+                        amount = item.get("amount", 0) or 0
+                        if amount <= 0:
+                            continue
+                        session.add(FinanceManualMovement(
+                            movement_date=movement_date,
+                            kind=kind,
+                            operation=item.get("operation") or "+",
+                            amount=amount,
+                            currency_code=item.get("currency") or item.get("currency_code") or "UZS",
+                            rate_to_uzs=item.get("rate_to_uzs") or 1,
+                        ))
+                        migrated += 1
+                    else:
+                        try:
+                            amount = float(item or 0)
+                        except (TypeError, ValueError):
+                            amount = 0
+                        if amount:
+                            session.add(FinanceManualMovement(
+                                movement_date=movement_date,
+                                kind=kind,
+                                operation="+" if amount > 0 else "-",
+                                amount=abs(amount),
+                                currency_code="UZS",
+                                rate_to_uzs=1,
+                            ))
+                            migrated += 1
+    if migrated:
+        try:
+            os.replace(path, f"{path}.migrated")
+        except OSError:
+            pass
+    return bool(migrated)
+
 def _first_activity_date_in_session(session):
     date_columns = [
         Product.created_at,
         StockMovement.created_at,
         Sale.created_at,
         Expense.created_at,
+        FinanceManualMovement.movement_date,
         SupplierDebtMovement.created_at,
         DebtorDebtMovement.created_at,
         LoginLog.logged_at,

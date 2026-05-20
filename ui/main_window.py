@@ -109,7 +109,7 @@ TEXTS = {
         "logout": "Chiqish", "logout_q": "Haqiqatan chiqmoqchimisiz?",
         "Admin": "Admin", "Kassir": "Kassir", "sales": "Sotuv",
         "products": "Mahsulotlar", "stock": "Ombor",
-        "reports": "Hisobotlar", "finance": "Finance", "supplier_debts": "Qarzlar", "expenses": "Harajatlar",
+        "reports": "Hisobotlar", "finance": "Moliya", "supplier_debts": "Qarzlar", "expenses": "Harajatlar",
         "checking": "Tekshiruv",
         "users": "Kassirlar", "login_history": "Kirish tarixi",
     },
